@@ -72,3 +72,7 @@ Migration 002 enforces at most one trader per tenant with a MySQL unique generat
 ## Product and invoice tests
 
 Set MYSQL_COMMERCE_TEST_DSN to a fresh dedicated MySQL database to exercise invoice posting, voids, stock concurrency, exact pack pricing, and tenant isolation. Migration 003 creates commerce tables without changing existing users or clients.
+
+## R2 uploads
+
+Set the R2 variables in the environment using .env.r2.example as a template. Never commit access keys. The API accepts multipart/form-data at /api/v1/tenants/:tenantID/files/upload (file) and /files/uploads (repeated files). Files are tenant-scoped, limited to JPEG/PNG/WebP/PDF, and up to 50 MiB each. See docs/commerce-api.md.

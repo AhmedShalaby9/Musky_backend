@@ -100,3 +100,29 @@ Client lookup also supports `/clients?q=search&active=true&limit=50&offset=0` fo
 `MYSQL_COMMERCE_TEST_DSN` enables real-MySQL commerce tests against a **fresh dedicated database**. Tests cover pack arithmetic, exact money, cross-tenant IDs/foreign keys, duplicate codes, stale edits, snapshots, insufficient-stock rollback, competing invoice posts, idempotent transitions, voids and ledger totals. Data is left in the test database for inspection; no business database is modified.
 
 Implementation reference: [MySQL locking reads](https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html).
+
+## R2 file uploads
+
+R2 is configured only through environment variables: `R2_ACCOUNT_ID`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, `R2_PUBLIC_URL`, `R2_ACCESS_KEY_ID`, and `R2_SECRET_ACCESS_KEY`. The server uses the S3-compatible endpoint and does not store these credentials in MySQL or return them. Keep the bucket private if files contain business documents; `R2_PUBLIC_URL` is only used to populate returned metadata URLs.
+
+| Method | Route | Form field | Behavior |
+| --- | --- | --- | --- |
+| POST | `/files/upload` | `file` | Upload one file; 201 |
+| POST | `/files/uploads` | repeated `files` | Upload 1–20 files; 201 with per-file results |
+| GET | `/files` | — | List tenant-owned file metadata |
+| DELETE | `/files/:id` | — | Delete the R2 object and metadata; 204 |
+
+Allowed types are JPEG, PNG, WebP and PDF. Each file is 1 byte–50 MiB. Keys are generated as `tenants/{tenant_id}/files/{random-id}{extension}`; original filenames are metadata only. Upload failures clean up objects already uploaded in the same multi-upload request and return an error. Files are currently general tenant files; product/invoice attachment foreign keys can be added once attachment UX is defined.
+
+The multi-upload endpoint accepts up to 20 files. Each file must be between 1 byte and 50 MiB.
+
+Example:
+
+```sh
+curl -X POST http://127.0.0.1:8080/api/v1/tenants/7/files/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@invoice.pdf"
+curl -X POST http://127.0.0.1:8080/api/v1/tenants/7/files/uploads \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "files=@front.png" -F "files=@back.png"
+```

@@ -14,20 +14,27 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
 	"musky/backend/internal/model"
+	"musky/backend/internal/storage"
 )
 
 type API struct {
 	db      *sql.DB
 	limiter *loginLimiter
+	files   *storage.R2
 }
 
 func New(db *sql.DB) *gin.Engine {
-	a := &API{db: db, limiter: newLoginLimiter()}
+	files, _ := storage.NewR2FromEnv()
+	a := &API{db: db, limiter: newLoginLimiter(), files: files}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	_ = r.SetTrustedProxies(nil)
 	r.Use(func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
+		if !strings.HasPrefix(strings.ToLower(c.GetHeader("Content-Type")), "multipart/form-data") {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 64*1024)
+		} else {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100*1024*1024)
+		}
 		c.Header("Cache-Control", "no-store")
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Next()
@@ -66,6 +73,10 @@ func New(db *sql.DB) *gin.Engine {
 	t.POST("/invoices/:id/post", a.postInvoice)
 	t.POST("/invoices/:id/void", a.voidInvoice)
 	t.GET("/financial-summary", a.financialSummary)
+	t.POST("/files/upload", a.uploadOne)
+	t.POST("/files/uploads", a.uploadMany)
+	t.GET("/files", a.listFiles)
+	t.DELETE("/files/:id", a.deleteFile)
 	return r
 }
 
