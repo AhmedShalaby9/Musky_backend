@@ -41,7 +41,35 @@ func readInvoice(ctx context.Context, tx *sql.Tx, tenant, id uint64, lock bool) 
 		}
 		v.Items = append(v.Items, item)
 	}
-	return v, rows.Err()
+	if err = rows.Err(); err != nil {
+		return v, err
+	}
+	v.Payments = []model.Payment{}
+	rows, err = tx.QueryContext(ctx, "SELECT id,amount_minor,method,notes,paid_at FROM invoice_payments WHERE tenant_id=? AND invoice_id=? ORDER BY paid_at,id", tenant, id)
+	if err != nil {
+		return v, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payment model.Payment
+		if err = rows.Scan(&payment.ID, &payment.AmountMinor, &payment.Method, &payment.Notes, &payment.PaidAt); err != nil {
+			return v, err
+		}
+		v.PaidMinor += payment.AmountMinor
+		v.Payments = append(v.Payments, payment)
+	}
+	if err = rows.Err(); err != nil {
+		return v, err
+	}
+	v.RemainingMinor = v.TotalMinor - v.PaidMinor
+	v.PaymentStatus = "unpaid"
+	if v.PaidMinor > 0 {
+		v.PaymentStatus = "partially_paid"
+	}
+	if v.RemainingMinor == 0 && v.TotalMinor > 0 {
+		v.PaymentStatus = "paid"
+	}
+	return v, nil
 }
 func (a *API) listInvoices(c *gin.Context) {
 	limit, offset, ok := pagination(c)
@@ -389,10 +417,72 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 func (a *API) financialSummary(c *gin.Context) {
 	var receivables, payables, net int64
 	err := a.db.QueryRowContext(c.Request.Context(), `SELECT COALESCE(SUM(GREATEST(balance,0)),0),COALESCE(SUM(GREATEST(-balance,0)),0),COALESCE(SUM(balance),0)
- FROM (SELECT client_id,SUM(amount_minor) AS balance FROM client_ledger WHERE tenant_id=? GROUP BY client_id) balances`, tenantID(c)).Scan(&receivables, &payables, &net)
+ FROM (SELECT l.client_id,SUM(l.amount_minor)-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=l.tenant_id AND p.client_id=l.client_id),0) AS balance FROM client_ledger l WHERE l.tenant_id=? GROUP BY l.tenant_id,l.client_id) balances`, tenantID(c)).Scan(&receivables, &payables, &net)
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"currency": "EGP", "receivables_minor": receivables, "payables_minor": payables, "net_minor": net, "scope": "posted_invoices_and_voids"})
+}
+
+type paymentInput struct {
+	AmountMinor int64  `json:"amount_minor"`
+	Method      string `json:"method"`
+	Notes       string `json:"notes"`
+}
+
+func (a *API) createPayment(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	var in paymentInput
+	if !decode(c, &in) {
+		return
+	}
+	in.Method = strings.ToLower(strings.TrimSpace(in.Method))
+	in.Notes = strings.TrimSpace(in.Notes)
+	if in.AmountMinor < 1 || in.AmountMinor > maxPrice || (in.Method != "cash" && in.Method != "online") || !validText(in.Notes, 0, 500) {
+		fail(c, 400, "amount_minor, method (cash or online), and valid notes are required")
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	var clientID uint64
+	var status string
+	var total, paid int64
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT client_id,status,total_minor FROM invoices WHERE tenant_id=? AND id=? FOR UPDATE", tenantID(c), id).Scan(&clientID, &status, &total); err != nil {
+		databaseError(c, err)
+		return
+	}
+	if status != "posted" {
+		fail(c, 409, "payments can only be recorded for posted invoices")
+		return
+	}
+	if err := tx.QueryRowContext(c.Request.Context(), "SELECT COALESCE(SUM(amount_minor),0) FROM invoice_payments WHERE tenant_id=? AND invoice_id=?", tenantID(c), id).Scan(&paid); err != nil {
+		databaseError(c, err)
+		return
+	}
+	if paid > total-in.AmountMinor {
+		fail(c, 409, "payment exceeds the invoice remaining balance")
+		return
+	}
+	res, err := tx.ExecContext(c.Request.Context(), "INSERT INTO invoice_payments(tenant_id,invoice_id,client_id,received_by_user_id,amount_minor,method,notes) VALUES (?,?,?,?,?,?,?)", tenantID(c), id, clientID, actor(c).ID, in.AmountMinor, in.Method, in.Notes)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	paymentID, err := res.LastInsertId()
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.JSON(201, gin.H{"id": paymentID, "invoice_id": id, "client_id": clientID, "amount_minor": in.AmountMinor, "method": in.Method, "notes": in.Notes, "paid_minor": paid + in.AmountMinor, "remaining_minor": total - paid - in.AmountMinor})
 }

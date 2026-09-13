@@ -28,11 +28,22 @@ type Invoice struct {
 	Notes           string        `json:"notes"`
 	VoidReason      string        `json:"void_reason"`
 	TotalMinor      int64         `json:"total_minor"`
+	PaidMinor       int64         `json:"paid_minor"`
+	RemainingMinor  int64         `json:"remaining_minor"`
+	PaymentStatus   string        `json:"payment_status"`
 	Version         int64         `json:"version"`
 	CreatedAt       time.Time     `json:"created_at"`
 	PostedAt        *time.Time    `json:"posted_at"`
 	VoidedAt        *time.Time    `json:"voided_at"`
 	Items           []InvoiceItem `json:"items,omitempty"`
+	Payments        []Payment     `json:"payments,omitempty"`
+}
+type Payment struct {
+	ID          uint64    `json:"id"`
+	AmountMinor int64     `json:"amount_minor"`
+	Method      string    `json:"method"`
+	Notes       string    `json:"notes"`
+	PaidAt      time.Time `json:"paid_at"`
 }
 type InvoiceItem struct {
 	ProductID      uint64 `json:"product_id"`

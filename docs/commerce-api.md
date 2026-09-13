@@ -52,6 +52,7 @@ Drafts can be edited and do not reserve or deduct stock. Cancelled drafts remain
 | DELETE | `/invoices/:id?version=1` | Cancel draft; returns preserved invoice, 200. |
 | POST | `/invoices/:id/post` | Body `{"version":1}`; post draft, 200. |
 | POST | `/invoices/:id/void` | Body `{"version":2,"reason":"Order cancelled"}`; void posted invoice, 200. |
+| POST | `/invoices/:id/payments` | Record a cash or online payment against a posted invoice; 201. |
 
 Draft creation example:
 
@@ -75,6 +76,8 @@ Posting verifies the client/products are active, sufficient stock exists, and ea
 Stock changes, stock-history records, invoice status/number, and client-ledger entries commit in one MySQL transaction. Failed lines roll back the whole transaction. Commerce writes lock the tenant row before affected records, serializing writes within one trader's workspace and preventing overselling. Different tenants remain independent. Voiding restores invoiced packs even if the product has since been archived.
 
 Completed post/void/cancel transitions are idempotent: retrying the same transition returns the existing result without applying stock/debt effects again. Stale draft saves return 409. Creating a draft is not idempotent; after an uncertain create response, refresh the invoice list before creating another draft.
+
+Payments use `{"amount_minor":100000,"method":"cash","notes":""}` or `method:"online"`. Multiple payments are supported, overpayments are rejected, and invoice responses include `paid_minor`, `remaining_minor`, `payment_status` (`unpaid`, `partially_paid`, or `paid`) and `payments`. Financial summaries use the remaining client balance after payments.
 
 ## Financial overview
 
