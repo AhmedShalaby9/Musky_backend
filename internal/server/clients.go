@@ -45,7 +45,11 @@ func (in clientInput) apply(v *model.Client) {
 		v.Name = *in.Name
 	}
 	if in.Phone != nil {
-		v.Phone = *in.Phone
+		if *in.Phone == "" {
+			v.Phone = nil
+		} else {
+			v.Phone = in.Phone
+		}
 	}
 	if in.Address != nil {
 		v.Address = *in.Address

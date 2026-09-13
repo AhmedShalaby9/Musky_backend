@@ -1,0 +1,2 @@
+ALTER TABLE clients MODIFY phone VARCHAR(40) NULL DEFAULT NULL;
+UPDATE clients SET phone = NULL WHERE phone = '';
