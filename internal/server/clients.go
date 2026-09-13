@@ -6,20 +6,39 @@ import (
 	"strings"
 )
 
-const clientColumns = "id,tenant_id,user_id,name,phone,address,active,created_at"
+// clientStoredCols selects the persisted columns only (no alias required).
+const clientStoredCols = "id,tenant_id,user_id,name,phone,address,active,opening_balance_minor,created_at"
 
+// clientDisplayCols selects all persisted columns (aliased to c.) plus a computed
+// balance_minor that sums the opening balance, posted-invoice amounts, and payments.
+const clientDisplayCols = "c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at," +
+	"(c.opening_balance_minor" +
+	"+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)" +
+	"-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0)" +
+	") AS balance_minor"
+
+// scanClientStored reads the 9 persisted columns. Used inside transactions where
+// the full balance expression is not needed (e.g. FOR UPDATE row lock).
+func scanClientStored(row scanner) (model.Client, error) {
+	var v model.Client
+	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt)
+	return v, err
+}
+
+// scanClient reads 10 columns: the 9 persisted plus the computed balance_minor.
 func scanClient(row scanner) (model.Client, error) {
 	var v model.Client
-	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt, &v.BalanceMinor)
 	return v, err
 }
 
 type clientInput struct {
-	UserID  *uint64 `json:"user_id"`
-	Name    *string `json:"name"`
-	Phone   *string `json:"phone"`
-	Address *string `json:"address"`
-	Active  *bool   `json:"active"`
+	UserID              *uint64 `json:"user_id"`
+	Name                *string `json:"name"`
+	Phone               *string `json:"phone"`
+	Address             *string `json:"address"`
+	Active              *bool   `json:"active"`
+	OpeningBalanceMinor *int64  `json:"opening_balance_minor"`
 }
 
 func (in *clientInput) valid() bool {
@@ -37,6 +56,7 @@ func (in *clientInput) valid() bool {
 	}
 	return in.UserID == nil || *in.UserID > 0
 }
+
 func (in clientInput) apply(v *model.Client) {
 	if in.UserID != nil {
 		v.UserID = *in.UserID
@@ -57,22 +77,26 @@ func (in clientInput) apply(v *model.Client) {
 	if in.Active != nil {
 		v.Active = *in.Active
 	}
+	if in.OpeningBalanceMinor != nil {
+		v.OpeningBalanceMinor = *in.OpeningBalanceMinor
+	}
 }
+
 func (a *API) listClients(c *gin.Context) {
 	limit, offset, ok := pagination(c)
 	if !ok {
 		return
 	}
-	query := "SELECT " + clientColumns + " FROM clients WHERE tenant_id=?"
+	query := "SELECT " + clientDisplayCols + " FROM clients c WHERE c.tenant_id=?"
 	args := []any{tenantID(c)}
 	if c.Query("active") == "true" {
-		query += " AND active=TRUE"
+		query += " AND c.active=TRUE"
 	}
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
-		query += " AND (name LIKE ? OR phone LIKE ?)"
+		query += " AND (c.name LIKE ? OR c.phone LIKE ?)"
 		args = append(args, "%"+q+"%", "%"+q+"%")
 	}
-	query += " ORDER BY id LIMIT ? OFFSET ?"
+	query += " ORDER BY c.id LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 	rows, err := a.db.QueryContext(c.Request.Context(), query, args...)
 	if err != nil {
@@ -95,18 +119,22 @@ func (a *API) listClients(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"data": data, "limit": limit, "offset": offset})
 }
+
 func (a *API) getClient(c *gin.Context) {
 	id, ok := pathID(c, "id")
 	if !ok {
 		return
 	}
-	v, err := scanClient(a.db.QueryRowContext(c.Request.Context(), "SELECT "+clientColumns+" FROM clients WHERE tenant_id=? AND id=?", tenantID(c), id))
+	v, err := scanClient(a.db.QueryRowContext(c.Request.Context(),
+		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
+		tenantID(c), id))
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
 	c.JSON(200, v)
 }
+
 func (a *API) createClient(c *gin.Context) { a.saveClient(c, true) }
 func (a *API) updateClient(c *gin.Context) { a.saveClient(c, false) }
 func (a *API) deleteClient(c *gin.Context) {
@@ -125,6 +153,7 @@ func (a *API) deleteClient(c *gin.Context) {
 	}
 	c.Status(204)
 }
+
 func (a *API) saveClient(c *gin.Context, create bool) {
 	var in clientInput
 	if !decode(c, &in) {
@@ -134,7 +163,7 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		fail(c, 400, "invalid client fields; name is required on creation")
 		return
 	}
-	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Address == nil && in.Active == nil {
+	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Address == nil && in.Active == nil && in.OpeningBalanceMinor == nil {
 		fail(c, 400, "no changes provided")
 		return
 	}
@@ -159,7 +188,9 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 			v.UserID = u.ID
 		}
 	} else {
-		v, err = scanClient(tx.QueryRowContext(c.Request.Context(), "SELECT "+clientColumns+" FROM clients WHERE tenant_id=? AND id=? FOR UPDATE", tenantID(c), id))
+		v, err = scanClientStored(tx.QueryRowContext(c.Request.Context(),
+			"SELECT "+clientStoredCols+" FROM clients WHERE tenant_id=? AND id=? FOR UPDATE",
+			tenantID(c), id))
 		if err != nil {
 			databaseError(c, err)
 			return
@@ -172,13 +203,17 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 	}
 	if create || in.UserID != nil {
 		var owner uint64
-		if err = tx.QueryRowContext(c.Request.Context(), "SELECT id FROM users WHERE tenant_id=? AND id=? AND active=TRUE FOR SHARE", tenantID(c), v.UserID).Scan(&owner); err != nil {
+		if err = tx.QueryRowContext(c.Request.Context(),
+			"SELECT id FROM users WHERE tenant_id=? AND id=? AND active=TRUE FOR SHARE",
+			tenantID(c), v.UserID).Scan(&owner); err != nil {
 			databaseError(c, err)
 			return
 		}
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO clients(tenant_id,user_id,name,phone,address,active) VALUES (?,?,?,?,?,?)", v.TenantID, v.UserID, v.Name, v.Phone, v.Address, v.Active)
+		result, err := tx.ExecContext(c.Request.Context(),
+			"INSERT INTO clients(tenant_id,user_id,name,phone,address,active,opening_balance_minor) VALUES (?,?,?,?,?,?,?)",
+			v.TenantID, v.UserID, v.Name, v.Phone, v.Address, v.Active, v.OpeningBalanceMinor)
 		if err != nil {
 			databaseError(c, err)
 			return
@@ -190,12 +225,16 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		}
 		id = uint64(inserted)
 	} else {
-		if _, err = tx.ExecContext(c.Request.Context(), "UPDATE clients SET user_id=?,name=?,phone=?,address=?,active=? WHERE tenant_id=? AND id=?", v.UserID, v.Name, v.Phone, v.Address, v.Active, tenantID(c), id); err != nil {
+		if _, err = tx.ExecContext(c.Request.Context(),
+			"UPDATE clients SET user_id=?,name=?,phone=?,address=?,active=?,opening_balance_minor=? WHERE tenant_id=? AND id=?",
+			v.UserID, v.Name, v.Phone, v.Address, v.Active, v.OpeningBalanceMinor, tenantID(c), id); err != nil {
 			databaseError(c, err)
 			return
 		}
 	}
-	v, err = scanClient(tx.QueryRowContext(c.Request.Context(), "SELECT "+clientColumns+" FROM clients WHERE tenant_id=? AND id=?", tenantID(c), id))
+	v, err = scanClient(tx.QueryRowContext(c.Request.Context(),
+		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
+		tenantID(c), id))
 	if err != nil {
 		databaseError(c, err)
 		return

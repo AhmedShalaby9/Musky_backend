@@ -1,0 +1,1 @@
+ALTER TABLE clients ADD COLUMN opening_balance_minor BIGINT NOT NULL DEFAULT 0;
