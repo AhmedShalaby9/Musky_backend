@@ -1,6 +1,6 @@
 module musky/backend
 
-go 1.25.0
+go 1.26.1
 
 require (
 	github.com/gin-gonic/gin v1.12.0
@@ -26,6 +26,7 @@ require (
 	github.com/goccy/go-json v0.10.5 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gvanbeck/nautilus v0.2.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect

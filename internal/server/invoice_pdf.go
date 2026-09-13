@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gvanbeck/nautilus/pdf/rtl"
 	"github.com/phpdave11/gofpdf"
 )
 
@@ -52,28 +53,28 @@ func (a *API) invoicePDF(c *gin.Context) {
 	pdf.AddPage()
 	pdf.SetFont(font, "B", 20)
 	pdf.SetTextColor(15, 79, 79)
-	pdf.CellFormat(0, 12, tenantName, "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 12, arabic(tenantName), "", 1, "R", false, 0, "")
 	pdf.SetFont(font, "B", 24)
-	pdf.CellFormat(0, 16, "فاتورة مبيعات", "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 16, arabic("فاتورة مبيعات"), "", 1, "R", false, 0, "")
 	pdf.SetFont(font, "", 11)
 	pdf.SetTextColor(30, 50, 60)
-	number := "مسودة"
+	number := arabic("مسودة")
 	if invoice.Number != nil {
 		number = fmt.Sprintf("INV-%06d", *invoice.Number)
 	}
-	pdf.CellFormat(0, 7, fmt.Sprintf("رقم الفاتورة: %s    التاريخ: %s", number, invoice.IssueDate), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 7, fmt.Sprintf(arabic("رقم الفاتورة: %s    التاريخ: %s"), number, invoice.IssueDate), "", 1, "R", false, 0, "")
 	pdf.Ln(5)
 	pdf.SetFillColor(224, 240, 238)
 	pdf.SetFont(font, "B", 12)
-	pdf.CellFormat(0, 9, "بيانات العميل", "", 1, "R", true, 0, "")
+	pdf.CellFormat(0, 9, arabic("بيانات العميل"), "", 1, "R", true, 0, "")
 	pdf.SetFont(font, "", 11)
-	pdf.CellFormat(0, 8, invoice.ClientName, "", 1, "R", false, 0, "")
-	pdf.CellFormat(0, 8, invoice.ClientAddress, "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 8, arabic(invoice.ClientName), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 8, arabic(invoice.ClientAddress), "", 1, "R", false, 0, "")
 	pdf.Ln(5)
 	pdf.SetFillColor(15, 79, 79)
 	pdf.SetTextColor(255, 255, 255)
 	pdf.SetFont(font, "B", 10)
-	for _, h := range []string{"الإجمالي", "سعر العبوة", "الكمية", "الكود", "المنتج"} {
+	for _, h := range []string{arabic("الإجمالي"), arabic("سعر العبوة"), arabic("الكمية"), arabic("الكود"), arabic("المنتج")} {
 		pdf.CellFormat(38, 9, h, "1", 0, "C", true, 0, "")
 	}
 	pdf.Ln(-1)
@@ -84,14 +85,14 @@ func (a *API) invoicePDF(c *gin.Context) {
 		pdf.CellFormat(38, 9, moneyPDF(item.UnitPriceMinor), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(38, 9, fmt.Sprint(item.Quantity), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(38, 9, item.Code, "1", 0, "C", false, 0, "")
-		pdf.CellFormat(38, 9, item.Title, "1", 1, "R", false, 0, "")
+		pdf.CellFormat(38, 9, arabic(item.Title), "1", 1, "R", false, 0, "")
 	}
 	pdf.Ln(6)
 	pdf.SetFont(font, "B", 13)
-	pdf.CellFormat(0, 9, fmt.Sprintf("الإجمالي: %s    المدفوع: %s    المتبقي: %s", moneyPDF(invoice.TotalMinor), moneyPDF(invoice.PaidMinor), moneyPDF(invoice.RemainingMinor)), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 9, fmt.Sprintf(arabic("الإجمالي: %s    المدفوع: %s    المتبقي: %s"), moneyPDF(invoice.TotalMinor), moneyPDF(invoice.PaidMinor), moneyPDF(invoice.RemainingMinor)), "", 1, "R", false, 0, "")
 	if invoice.PaymentStatus != "" {
 		pdf.SetFont(font, "", 11)
-		pdf.CellFormat(0, 8, "حالة الدفع: "+invoice.PaymentStatus, "", 1, "R", false, 0, "")
+		pdf.CellFormat(0, 8, arabic("حالة الدفع: ")+invoice.PaymentStatus, "", 1, "R", false, 0, "")
 	}
 	if logoKey != "" {
 		if rc, e := a.files.Get(c.Request.Context(), logoKey); e == nil {
@@ -124,5 +125,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 	}
 	c.JSON(201, gin.H{"invoice_id": id, "url": url, "key": key})
 }
+
+func arabic(s string) string { return rtl.Shape(s) }
 
 func moneyPDF(minor int64) string { return fmt.Sprintf("EGP %d.%02d", minor/100, minor%100) }
