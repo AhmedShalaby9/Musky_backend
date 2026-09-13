@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"musky/backend/internal/model"
 	"net/mail"
 	"strings"
 	"sync"
@@ -119,7 +120,7 @@ func (a *API) login(c *gin.Context) {
 	}
 	if u.TenantID != nil {
 		var active bool
-		if err = a.db.QueryRowContext(c.Request.Context(), "SELECT active FROM tenants WHERE id = ?", *u.TenantID).Scan(&active); err != nil {
+		if err = a.db.QueryRowContext(c.Request.Context(), "SELECT active,logo_url FROM tenants WHERE id = ?", *u.TenantID).Scan(&active, &u.LogoURL); err != nil {
 			databaseError(c, err)
 			return
 		}
@@ -155,6 +156,21 @@ func (a *API) login(c *gin.Context) {
 	}
 	c.JSON(200, gin.H{"access_token": token, "token_type": "Bearer", "expires_at": expiry, "user": u})
 }
+
+func (a *API) me(c *gin.Context) {
+	u := actor(c)
+	a.populateLogo(c, &u)
+	c.JSON(200, u)
+}
+
+func (a *API) populateLogo(c *gin.Context, u *model.User) {
+	if u.TenantID == nil {
+		return
+	}
+	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT logo_url FROM tenants WHERE id = ?", *u.TenantID).Scan(&u.LogoURL); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		databaseError(c, err)
+	}
+}
 func (a *API) authenticate(c *gin.Context) {
 	parts := strings.Fields(c.GetHeader("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || len(parts[1]) != 64 {
@@ -176,6 +192,7 @@ func (a *API) authenticate(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
+	a.populateLogo(c, &u)
 	c.Set("user", u)
 	c.Set("token_hash", tokenHash(parts[1]))
 }

@@ -44,7 +44,7 @@ func New(db *sql.DB) *gin.Engine {
 	v.POST("/auth/login", a.login)
 	v.Use(a.authenticate)
 	v.POST("/auth/logout", a.logout)
-	v.GET("/me", func(c *gin.Context) { c.JSON(200, actor(c)) })
+	v.GET("/me", a.me)
 	v.PUT("/me/password", a.changePassword)
 	v.GET("/tenants", onlySuper, a.listTenants)
 	v.POST("/tenants", onlySuper, a.createTenant)

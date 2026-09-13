@@ -24,6 +24,7 @@ type User struct {
 	Email        string    `json:"email"`
 	Role         Role      `json:"role"`
 	Active       bool      `json:"active"`
+	LogoURL      string    `json:"logo_url,omitempty"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 }
