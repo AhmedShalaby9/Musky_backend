@@ -14,6 +14,7 @@ type Tenant struct {
 	ID        uint64    `json:"id"`
 	Name      string    `json:"name"`
 	Active    bool      `json:"active"`
+	LogoURL   string    `json:"logo_url"`
 	CreatedAt time.Time `json:"created_at"`
 }
 type User struct {

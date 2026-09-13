@@ -78,7 +78,7 @@ func (a *API) listTenants(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := a.db.QueryContext(c.Request.Context(), "SELECT id,name,active,created_at FROM tenants ORDER BY id LIMIT ? OFFSET ?", limit, offset)
+	rows, err := a.db.QueryContext(c.Request.Context(), "SELECT id,name,active,logo_url,created_at FROM tenants ORDER BY id LIMIT ? OFFSET ?", limit, offset)
 	if err != nil {
 		databaseError(c, err)
 		return
@@ -87,7 +87,7 @@ func (a *API) listTenants(c *gin.Context) {
 	data := []model.Tenant{}
 	for rows.Next() {
 		var t model.Tenant
-		if err = rows.Scan(&t.ID, &t.Name, &t.Active, &t.CreatedAt); err != nil {
+		if err = rows.Scan(&t.ID, &t.Name, &t.Active, &t.LogoURL, &t.CreatedAt); err != nil {
 			databaseError(c, err)
 			return
 		}
@@ -129,7 +129,7 @@ func (a *API) updateTenant(c *gin.Context) {
 	}
 	defer tx.Rollback()
 	var t model.Tenant
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT id,name,active,created_at FROM tenants WHERE id=? FOR UPDATE", id).Scan(&t.ID, &t.Name, &t.Active, &t.CreatedAt); err != nil {
+	if err = tx.QueryRowContext(c.Request.Context(), "SELECT id,name,active,logo_url,created_at FROM tenants WHERE id=? FOR UPDATE", id).Scan(&t.ID, &t.Name, &t.Active, &t.LogoURL, &t.CreatedAt); err != nil {
 		databaseError(c, err)
 		return
 	}

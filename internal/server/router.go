@@ -75,6 +75,8 @@ func New(db *sql.DB) *gin.Engine {
 	t.GET("/financial-summary", a.financialSummary)
 	t.POST("/files/upload", a.uploadOne)
 	t.POST("/files/uploads", a.uploadMany)
+	t.POST("/logo", a.uploadLogo)
+	t.DELETE("/logo", a.deleteLogo)
 	t.GET("/files", a.listFiles)
 	t.DELETE("/files/:id", a.deleteFile)
 	return r

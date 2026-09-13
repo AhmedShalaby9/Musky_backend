@@ -1,0 +1,4 @@
+ALTER TABLE tenants
+ ADD COLUMN logo_file_id BIGINT UNSIGNED NULL,
+ ADD COLUMN logo_url VARCHAR(1000) NOT NULL DEFAULT '',
+ ADD CONSTRAINT fk_tenant_logo_file FOREIGN KEY (logo_file_id) REFERENCES file_objects(id) ON DELETE SET NULL;

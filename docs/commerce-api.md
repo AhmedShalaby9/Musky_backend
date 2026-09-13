@@ -116,6 +116,8 @@ Allowed types are JPEG, PNG, WebP and PDF. Each file is 1 byte–50 MiB. Keys ar
 
 The multi-upload endpoint accepts up to 20 files. Each file must be between 1 byte and 50 MiB.
 
+Tenant logos use the same R2 storage and are linked to the tenant record. `POST /tenants/:tenantID/logo` accepts one `file` (JPEG, PNG or WebP, up to 50 MiB) and replaces the previous logo. `DELETE /tenants/:tenantID/logo` removes it. Tenant users and super admins can manage logos.
+
 Example:
 
 ```sh

@@ -25,6 +25,98 @@ func uploadKey(tenant uint64, name string) string {
 func (a *API) uploadStore() *storage.R2  { return a.files }
 func (a *API) uploadOne(c *gin.Context)  { a.upload(c, false) }
 func (a *API) uploadMany(c *gin.Context) { a.upload(c, true) }
+
+func (a *API) uploadLogo(c *gin.Context) {
+	if a.files == nil {
+		fail(c, 503, "file storage is not configured")
+		return
+	}
+	if err := c.Request.ParseMultipartForm(maxUpload); err != nil {
+		fail(c, 400, "invalid multipart upload or request is too large")
+		return
+	}
+	files := c.Request.MultipartForm.File["file"]
+	if len(files) != 1 {
+		fail(c, 400, "exactly one file is required")
+		return
+	}
+	h := files[0]
+	contentType := h.Header.Get("Content-Type")
+	if h.Size < 1 || h.Size > maxUpload {
+		fail(c, 400, "logo must be between 1 byte and 50 MB")
+		return
+	}
+	if contentType != "image/jpeg" && contentType != "image/png" && contentType != "image/webp" {
+		fail(c, 415, "logo must be JPEG, PNG or WebP")
+		return
+	}
+	file, err := h.Open()
+	if err != nil {
+		fail(c, 400, "cannot read uploaded file")
+		return
+	}
+	key := uploadKey(tenantID(c), h.Filename)
+	err = a.files.Put(c.Request.Context(), key, contentType, h.Size, file)
+	_ = file.Close()
+	if err != nil {
+		fail(c, 502, "file storage upload failed")
+		return
+	}
+	publicURL := a.files.URL(key)
+	res, err := a.db.ExecContext(c.Request.Context(), "INSERT INTO file_objects(tenant_id,uploaded_by_user_id,object_key,original_name,content_type,size_bytes,public_url) VALUES (?,?,?,?,?,?,?)", tenantID(c), actor(c).ID, key, h.Filename, contentType, h.Size, publicURL)
+	if err != nil {
+		_ = a.files.Delete(c.Request.Context(), key)
+		databaseError(c, err)
+		return
+	}
+	fileID, err := res.LastInsertId()
+	if err != nil {
+		_ = a.files.Delete(c.Request.Context(), key)
+		databaseError(c, err)
+		return
+	}
+	var oldKey string
+	_ = a.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(f.object_key,'') FROM tenants t LEFT JOIN file_objects f ON f.id=t.logo_file_id WHERE t.id=?", tenantID(c)).Scan(&oldKey)
+	if _, err = a.db.ExecContext(c.Request.Context(), "UPDATE tenants SET logo_file_id=?,logo_url=? WHERE id=?", fileID, publicURL, tenantID(c)); err != nil {
+		_ = a.files.Delete(c.Request.Context(), key)
+		_, _ = a.db.ExecContext(c.Request.Context(), "DELETE FROM file_objects WHERE id=?", fileID)
+		databaseError(c, err)
+		return
+	}
+	if oldKey != "" {
+		_ = a.files.Delete(c.Request.Context(), oldKey)
+		_, _ = a.db.ExecContext(c.Request.Context(), "DELETE FROM file_objects WHERE object_key=?", oldKey)
+	}
+	c.JSON(http.StatusCreated, gin.H{"url": publicURL, "file_id": fileID})
+}
+
+func (a *API) deleteLogo(c *gin.Context) {
+	if a.files == nil {
+		fail(c, 503, "file storage is not configured")
+		return
+	}
+	var fileID uint64
+	var key string
+	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(t.logo_file_id,0),COALESCE(f.object_key,'') FROM tenants t LEFT JOIN file_objects f ON f.id=t.logo_file_id WHERE t.id=?", tenantID(c)).Scan(&fileID, &key); err != nil {
+		databaseError(c, err)
+		return
+	}
+	if fileID == 0 {
+		c.Status(http.StatusNoContent)
+		return
+	}
+	if key != "" {
+		if err := a.files.Delete(c.Request.Context(), key); err != nil {
+			fail(c, 502, "file storage deletion failed")
+			return
+		}
+	}
+	if _, err := a.db.ExecContext(c.Request.Context(), "UPDATE tenants SET logo_file_id=NULL,logo_url='' WHERE id=?", tenantID(c)); err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
 func (a *API) upload(c *gin.Context, multiple bool) {
 	if a.files == nil {
 		fail(c, 503, "file storage is not configured")
