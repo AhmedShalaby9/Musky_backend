@@ -6,8 +6,8 @@ All routes use `/api/v1/tenants/:tenantID` and the authenticated bearer session.
 
 - `quantity` always counts **whole boxes/packs**, not individual pieces. Fractional quantities are rejected.
 - `pieces_per_unit` describes the contents of one pack. Ten packs with 12 pieces per pack represent 120 pieces; selling three packs leaves seven packs.
-- All prices are **EGP per pack**. API money fields ending in `_minor` are integer piastres: `2950` means EGP 29.50. Three packs total `8850`, or EGP 88.50.
-- Pack size: 1–1,000,000. Stock: 0–1,000,000,000 packs. Price: 0–1,000,000,000,000 piastres. Invoice total: up to 100,000,000,000,000 piastres. Arithmetic is checked before multiplication/addition.
+- Product prices are not stored. The trader enters an EGP per-pack price on each invoice. API money fields ending in `_minor` are integer piastres: `2950` means EGP 29.50.
+- Pack size: 1–1,000,000. Stock: 0–1,000,000,000 packs. Invoice prices are limited to 0–1,000,000,000,000 piastres. Invoice total: up to 100,000,000,000,000 piastres. Arithmetic is checked before multiplication/addition.
 - Invoices are sales on credit in this increment. Posting records the entire total as client debt. Payments, opening balances, tax, discounts, returns and PDF/printing are not yet implemented.
 
 ## Products
@@ -25,14 +25,13 @@ All routes use `/api/v1/tenants/:tenantID` and the authenticated bearer session.
   "title": "Tea pack",
   "code": "TEA-12",
   "quantity": 10,
-  "pieces_per_unit": 12,
-  "unit_price_minor": 2950
+  "pieces_per_unit": 12
 }
 ```
 
-Creation requires all five fields. Title is 1–150 characters; code is 1–80 and unique within the tenant (case-insensitive under the documented database collation). Responses also include `id`, `tenant_id`, `active`, `version` and `created_at`.
+Creation requires title, code, quantity and pieces_per_unit. Title is 1–150 characters; code is 1–80 and unique within the tenant (case-insensitive under the documented database collation). Responses also include `id`, `tenant_id`, `active`, `version` and `created_at`.
 
-PATCH accepts any combination of the five fields and `active`, plus the required `version`. Example: `{"version":1,"quantity":15}` sets stock to 15 packs and records the delta in stock history. `{"version":2,"active":true}` restores an archived product. A stale version returns 409 rather than overwriting stock changed by another user/invoice. Refresh before retrying.
+PATCH accepts any combination of the product fields and `active`, plus the required `version`. Example: `{"version":1,"quantity":15}` sets stock to 15 packs and records the delta in stock history. `{"version":2,"active":true}` restores an archived product. A stale version returns 409 rather than overwriting stock changed by another user/invoice. Refresh before retrying.
 
 ## Invoice lifecycle
 
@@ -67,7 +66,7 @@ Draft creation example:
 }
 ```
 
-`issue_date` is a valid `YYYY-MM-DD` date. Notes are optional (up to 2,000 characters). Include 1–100 distinct products; combine quantities for repeated products. Line `unit_price_minor` may be omitted to use the product's current price when saving the draft. All other totals, snapshots, tenant IDs, status and invoice numbers are server-controlled; unknown fields are rejected. Editing requires the same complete body plus the current `version`.
+`issue_date` is a valid `YYYY-MM-DD` date. Notes are optional (up to 2,000 characters). Include 1–100 distinct products; combine quantities for repeated products. Every line must include `unit_price_minor`; prices are captured in the invoice snapshot and can differ between invoices. All other totals, snapshots, tenant IDs, status and invoice numbers are server-controlled; unknown fields are rejected. Editing requires the same complete body plus the current `version`.
 
 Responses include client/name/address snapshots, immutable line snapshots, `total_minor`, `currency` (`EGP`), `status`, `version`, creator and timestamps. `number` is null for drafts/cancelled drafts. Posting assigns the next tenant-local number, displayed by Flutter as `INV-000001`.
 

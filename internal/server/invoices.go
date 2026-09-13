@@ -12,6 +12,7 @@ import (
 )
 
 const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d'),client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at"
+const maxPrice int64 = 1000000000000
 
 func scanInvoice(row scanner) (model.Invoice, error) {
 	var v model.Invoice
@@ -194,10 +195,11 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 			fail(c, 409, "cannot invoice an archived product")
 			return
 		}
-		price := p.UnitPriceMinor
-		if line.UnitPriceMinor != nil {
-			price = *line.UnitPriceMinor
+		if line.UnitPriceMinor == nil {
+			fail(c, 400, "unit_price_minor is required for every invoice item")
+			return
 		}
+		price := *line.UnitPriceMinor
 		amount, valid := lineTotal(line.Quantity, price)
 		if !valid || total > maxTotal-amount {
 			fail(c, 400, "invalid quantities, prices or invoice total limit exceeded")

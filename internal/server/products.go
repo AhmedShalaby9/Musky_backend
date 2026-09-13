@@ -9,13 +9,12 @@ import (
 )
 
 const maxQuantity int64 = 1000000000
-const maxPrice int64 = 1000000000000
 const maxTotal int64 = 100000000000000
-const productColumns = "id,tenant_id,title,code,quantity,pieces_per_unit,unit_price_minor,active,version,created_at"
+const productColumns = "id,tenant_id,title,code,quantity,pieces_per_unit,active,version,created_at"
 
 func scanProduct(row scanner) (model.Product, error) {
 	var p model.Product
-	err := row.Scan(&p.ID, &p.TenantID, &p.Title, &p.Code, &p.Quantity, &p.PiecesPerUnit, &p.UnitPriceMinor, &p.Active, &p.Version, &p.CreatedAt)
+	err := row.Scan(&p.ID, &p.TenantID, &p.Title, &p.Code, &p.Quantity, &p.PiecesPerUnit, &p.Active, &p.Version, &p.CreatedAt)
 	return p, err
 }
 
@@ -91,13 +90,12 @@ func (a *API) getProduct(c *gin.Context) {
 }
 
 type productInput struct {
-	Title          *string `json:"title"`
-	Code           *string `json:"code"`
-	Quantity       *int64  `json:"quantity"`
-	PiecesPerUnit  *int64  `json:"pieces_per_unit"`
-	UnitPriceMinor *int64  `json:"unit_price_minor"`
-	Active         *bool   `json:"active"`
-	Version        int64   `json:"version"`
+	Title         *string `json:"title"`
+	Code          *string `json:"code"`
+	Quantity      *int64  `json:"quantity"`
+	PiecesPerUnit *int64  `json:"pieces_per_unit"`
+	Active        *bool   `json:"active"`
+	Version       int64   `json:"version"`
 }
 
 func (a *API) createProduct(c *gin.Context)  { a.saveProduct(c, true, false) }
@@ -112,15 +110,15 @@ func (a *API) saveProduct(c *gin.Context, create, archive bool) {
 	} else if !decode(c, &in) {
 		return
 	}
-	if create && (in.Title == nil || in.Code == nil || in.Quantity == nil || in.PiecesPerUnit == nil || in.UnitPriceMinor == nil) {
-		fail(c, 400, "title, code, quantity, pieces_per_unit and unit_price_minor are required")
+	if create && (in.Title == nil || in.Code == nil || in.Quantity == nil || in.PiecesPerUnit == nil) {
+		fail(c, 400, "title, code, quantity and pieces_per_unit are required")
 		return
 	}
 	if !create && in.Version <= 0 {
 		fail(c, 400, "current product version is required")
 		return
 	}
-	if !create && in.Title == nil && in.Code == nil && in.Quantity == nil && in.PiecesPerUnit == nil && in.UnitPriceMinor == nil && in.Active == nil {
+	if !create && in.Title == nil && in.Code == nil && in.Quantity == nil && in.PiecesPerUnit == nil && in.Active == nil {
 		fail(c, 400, "no changes provided")
 		return
 	}
@@ -163,18 +161,15 @@ func (a *API) saveProduct(c *gin.Context, create, archive bool) {
 	if in.PiecesPerUnit != nil {
 		p.PiecesPerUnit = *in.PiecesPerUnit
 	}
-	if in.UnitPriceMinor != nil {
-		p.UnitPriceMinor = *in.UnitPriceMinor
-	}
 	if in.Active != nil {
 		p.Active = *in.Active
 	}
-	if !validText(p.Title, 1, 150) || !validText(p.Code, 1, 80) || p.Quantity < 0 || p.Quantity > maxQuantity || p.PiecesPerUnit < 1 || p.PiecesPerUnit > 1000000 || p.UnitPriceMinor < 0 || p.UnitPriceMinor > maxPrice {
+	if !validText(p.Title, 1, 150) || !validText(p.Code, 1, 80) || p.Quantity < 0 || p.Quantity > maxQuantity || p.PiecesPerUnit < 1 || p.PiecesPerUnit > 1000000 {
 		fail(c, 400, "invalid product fields or numeric limits")
 		return
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO products(tenant_id,title,code,quantity,pieces_per_unit,unit_price_minor,active) VALUES (?,?,?,?,?,?,?)", p.TenantID, p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.UnitPriceMinor, p.Active)
+		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO products(tenant_id,title,code,quantity,pieces_per_unit,active) VALUES (?,?,?,?,?,?)", p.TenantID, p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.Active)
 		if err != nil {
 			databaseError(c, err)
 			return
@@ -186,7 +181,7 @@ func (a *API) saveProduct(c *gin.Context, create, archive bool) {
 		}
 		id = uint64(inserted)
 	} else {
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE products SET title=?,code=?,quantity=?,pieces_per_unit=?,unit_price_minor=?,active=?,version=version+1 WHERE tenant_id=? AND id=?", p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.UnitPriceMinor, p.Active, tenantID(c), id)
+		_, err = tx.ExecContext(c.Request.Context(), "UPDATE products SET title=?,code=?,quantity=?,pieces_per_unit=?,active=?,version=version+1 WHERE tenant_id=? AND id=?", p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.Active, tenantID(c), id)
 		if err != nil {
 			databaseError(c, err)
 			return

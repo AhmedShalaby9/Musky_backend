@@ -2,18 +2,17 @@ package model
 
 import "time"
 
-// Quantity and unit prices are measured in whole boxes/packs, not pieces.
+// Product quantities are measured in whole boxes/packs, not pieces.
 type Product struct {
-	ID             uint64    `json:"id"`
-	TenantID       uint64    `json:"tenant_id"`
-	Title          string    `json:"title"`
-	Code           string    `json:"code"`
-	Quantity       int64     `json:"quantity"`
-	PiecesPerUnit  int64     `json:"pieces_per_unit"`
-	UnitPriceMinor int64     `json:"unit_price_minor"`
-	Active         bool      `json:"active"`
-	Version        int64     `json:"version"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID            uint64    `json:"id"`
+	TenantID      uint64    `json:"tenant_id"`
+	Title         string    `json:"title"`
+	Code          string    `json:"code"`
+	Quantity      int64     `json:"quantity"`
+	PiecesPerUnit int64     `json:"pieces_per_unit"`
+	Active        bool      `json:"active"`
+	Version       int64     `json:"version"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 type Invoice struct {
 	ID              uint64        `json:"id"`
