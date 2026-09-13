@@ -6,11 +6,11 @@ import (
 	"strings"
 )
 
-const clientColumns = "id,tenant_id,user_id,name,phone,email,address,notes,active,created_at"
+const clientColumns = "id,tenant_id,user_id,name,phone,address,active,created_at"
 
 func scanClient(row scanner) (model.Client, error) {
 	var v model.Client
-	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Email, &v.Address, &v.Notes, &v.Active, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.CreatedAt)
 	return v, err
 }
 
@@ -18,9 +18,7 @@ type clientInput struct {
 	UserID  *uint64 `json:"user_id"`
 	Name    *string `json:"name"`
 	Phone   *string `json:"phone"`
-	Email   *string `json:"email"`
 	Address *string `json:"address"`
-	Notes   *string `json:"notes"`
 	Active  *bool   `json:"active"`
 }
 
@@ -34,16 +32,7 @@ func (in *clientInput) valid() bool {
 	if in.Phone != nil && !validText(*in.Phone, 0, 40) {
 		return false
 	}
-	if in.Email != nil {
-		*in.Email = normalizeEmail(*in.Email)
-		if *in.Email != "" && !validEmail(*in.Email) {
-			return false
-		}
-	}
 	if in.Address != nil && !validText(*in.Address, 0, 500) {
-		return false
-	}
-	if in.Notes != nil && !validText(*in.Notes, 0, 2000) {
 		return false
 	}
 	return in.UserID == nil || *in.UserID > 0
@@ -58,14 +47,8 @@ func (in clientInput) apply(v *model.Client) {
 	if in.Phone != nil {
 		v.Phone = *in.Phone
 	}
-	if in.Email != nil {
-		v.Email = *in.Email
-	}
 	if in.Address != nil {
 		v.Address = *in.Address
-	}
-	if in.Notes != nil {
-		v.Notes = *in.Notes
 	}
 	if in.Active != nil {
 		v.Active = *in.Active
@@ -135,7 +118,7 @@ func (a *API) saveClient(c *gin.Context, create, archive bool) {
 		fail(c, 400, "invalid client fields; name is required on creation")
 		return
 	}
-	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Email == nil && in.Address == nil && in.Notes == nil && in.Active == nil {
+	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Address == nil && in.Active == nil {
 		fail(c, 400, "no changes provided")
 		return
 	}
@@ -179,7 +162,7 @@ func (a *API) saveClient(c *gin.Context, create, archive bool) {
 		}
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO clients(tenant_id,user_id,name,phone,email,address,notes,active) VALUES (?,?,?,?,?,?,?,?)", v.TenantID, v.UserID, v.Name, v.Phone, v.Email, v.Address, v.Notes, v.Active)
+		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO clients(tenant_id,user_id,name,phone,address,active) VALUES (?,?,?,?,?,?)", v.TenantID, v.UserID, v.Name, v.Phone, v.Address, v.Active)
 		if err != nil {
 			databaseError(c, err)
 			return
@@ -191,7 +174,7 @@ func (a *API) saveClient(c *gin.Context, create, archive bool) {
 		}
 		id = uint64(inserted)
 	} else {
-		if _, err = tx.ExecContext(c.Request.Context(), "UPDATE clients SET user_id=?,name=?,phone=?,email=?,address=?,notes=?,active=? WHERE tenant_id=? AND id=?", v.UserID, v.Name, v.Phone, v.Email, v.Address, v.Notes, v.Active, tenantID(c), id); err != nil {
+		if _, err = tx.ExecContext(c.Request.Context(), "UPDATE clients SET user_id=?,name=?,phone=?,address=?,active=? WHERE tenant_id=? AND id=?", v.UserID, v.Name, v.Phone, v.Address, v.Active, tenantID(c), id); err != nil {
 			databaseError(c, err)
 			return
 		}

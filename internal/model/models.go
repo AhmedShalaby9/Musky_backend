@@ -36,9 +36,7 @@ type Client struct {
 	UserID    uint64    `json:"user_id"`
 	Name      string    `json:"name"`
 	Phone     string    `json:"phone"`
-	Email     string    `json:"email"`
 	Address   string    `json:"address"`
-	Notes     string    `json:"notes"`
 	Active    bool      `json:"active"`
 	CreatedAt time.Time `json:"created_at"`
 }

@@ -121,7 +121,7 @@ func TestMySQLTenantIsolation(t *testing.T) {
 	if len(list["data"].([]any)) != 0 {
 		t.Fatal("cross-tenant list leak")
 	}
-	call("PATCH", clientPath, tr, `{"notes":"updated"}`, 200)
+	call("PATCH", clientPath, tr, `{"address":"123 Street"}`, 200)
 	call("PATCH", clientPath, tr, `{"active":false}`, 200)
 	call("DELETE", clientPath, tr, "", 204)
 	call("DELETE", clientPath, a, "", 204)
