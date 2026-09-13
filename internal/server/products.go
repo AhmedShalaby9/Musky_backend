@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"github.com/gin-gonic/gin"
 	"musky/backend/internal/model"
-	"strconv"
 	"strings"
 )
 
@@ -98,16 +97,41 @@ type productInput struct {
 	Version       int64   `json:"version"`
 }
 
-func (a *API) createProduct(c *gin.Context)  { a.saveProduct(c, true, false) }
-func (a *API) updateProduct(c *gin.Context)  { a.saveProduct(c, false, false) }
-func (a *API) archiveProduct(c *gin.Context) { a.saveProduct(c, false, true) }
-func (a *API) saveProduct(c *gin.Context, create, archive bool) {
+func (a *API) createProduct(c *gin.Context) { a.saveProduct(c, true) }
+func (a *API) updateProduct(c *gin.Context) { a.saveProduct(c, false) }
+func (a *API) deleteProduct(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	_, err := tx.ExecContext(c.Request.Context(), "DELETE FROM stock_movements WHERE tenant_id=? AND product_id=?", tenantID(c), id)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	res, err := tx.ExecContext(c.Request.Context(), "DELETE FROM products WHERE tenant_id=? AND id=?", tenantID(c), id)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.Status(204)
+}
+func (a *API) saveProduct(c *gin.Context, create bool) {
 	var in productInput
-	if archive {
-		in.Version, _ = strconv.ParseInt(c.Query("version"), 10, 64)
-		active := false
-		in.Active = &active
-	} else if !decode(c, &in) {
+	if !decode(c, &in) {
 		return
 	}
 	if create && (in.Title == nil || in.Code == nil || in.Quantity == nil || in.PiecesPerUnit == nil) {
@@ -206,9 +230,7 @@ func (a *API) saveProduct(c *gin.Context, create, archive bool) {
 		databaseError(c, err)
 		return
 	}
-	if archive {
-		c.Status(204)
-	} else if create {
+	if create {
 		c.JSON(201, p)
 	} else {
 		c.JSON(200, p)

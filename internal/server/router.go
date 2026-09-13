@@ -59,12 +59,12 @@ func New(db *sql.DB) *gin.Engine {
 	t.POST("/clients", a.createClient)
 	t.GET("/clients/:id", a.getClient)
 	t.PATCH("/clients/:id", a.updateClient)
-	t.DELETE("/clients/:id", a.archiveClient)
+	t.DELETE("/clients/:id", a.deleteClient)
 	t.GET("/products", a.listProducts)
 	t.POST("/products", a.createProduct)
 	t.GET("/products/:id", a.getProduct)
 	t.PATCH("/products/:id", a.updateProduct)
-	t.DELETE("/products/:id", a.archiveProduct)
+	t.DELETE("/products/:id", a.deleteProduct)
 	t.GET("/invoices", a.listInvoices)
 	t.POST("/invoices", a.createInvoice)
 	t.GET("/invoices/:id", a.getInvoice)
@@ -94,6 +94,8 @@ func databaseError(c *gin.Context, err error) {
 		fail(c, 404, "not found")
 	case errors.As(err, &me) && me.Number == 1062:
 		fail(c, 409, "record already exists")
+	case errors.As(err, &me) && me.Number == 1451:
+		fail(c, 409, "cannot delete: record is referenced by other data")
 	case errors.As(err, &me) && (me.Number == 1452 || me.Number == 3819):
 		fail(c, 400, "invalid record association")
 	default:

@@ -70,7 +70,7 @@ Prefix: `/tenants/:tenantID/clients`. All authenticated roles can read/create/ed
 | POST | empty | Create client; 201 |
 | GET | `/:id` | Get client |
 | PATCH | `/:id` | Update supplied fields; 200 |
-| DELETE | `/:id` | Archive client; 204 |
+| DELETE | `/:id` | Delete client; 204. Returns 409 if referenced by invoices or payments |
 
 Creation example:
 

@@ -107,15 +107,27 @@ func (a *API) getClient(c *gin.Context) {
 	}
 	c.JSON(200, v)
 }
-func (a *API) createClient(c *gin.Context)  { a.saveClient(c, true, false) }
-func (a *API) updateClient(c *gin.Context)  { a.saveClient(c, false, false) }
-func (a *API) archiveClient(c *gin.Context) { a.saveClient(c, false, true) }
-func (a *API) saveClient(c *gin.Context, create, archive bool) {
+func (a *API) createClient(c *gin.Context) { a.saveClient(c, true) }
+func (a *API) updateClient(c *gin.Context) { a.saveClient(c, false) }
+func (a *API) deleteClient(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	res, err := a.db.ExecContext(c.Request.Context(), "DELETE FROM clients WHERE tenant_id=? AND id=?", tenantID(c), id)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	c.Status(204)
+}
+func (a *API) saveClient(c *gin.Context, create bool) {
 	var in clientInput
-	if archive {
-		active := false
-		in.Active = &active
-	} else if !decode(c, &in) {
+	if !decode(c, &in) {
 		return
 	}
 	if !in.valid() || (create && in.Name == nil) {
@@ -192,9 +204,7 @@ func (a *API) saveClient(c *gin.Context, create, archive bool) {
 		databaseError(c, err)
 		return
 	}
-	if archive {
-		c.Status(204)
-	} else if create {
+	if create {
 		c.JSON(201, v)
 	} else {
 		c.JSON(200, v)

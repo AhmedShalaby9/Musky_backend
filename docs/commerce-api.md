@@ -18,7 +18,7 @@ All routes use `/api/v1/tenants/:tenantID` and the authenticated bearer session.
 | POST | `/products` | Create product and record opening stock; 201. |
 | GET | `/products/:id` | Read product; 200. |
 | PATCH | `/products/:id` | Update selected fields, including stock; 200. Requires current `version`. |
-| DELETE | `/products/:id?version=3` | Archive product; 204. History is retained. |
+| DELETE | `/products/:id` | Delete product; 204. Returns 409 if referenced by invoices. Stock movements are removed. |
 
 ```json
 {
