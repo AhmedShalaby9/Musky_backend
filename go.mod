@@ -6,6 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/minio/minio-go/v7 v7.3.0
+	github.com/phpdave11/gofpdf v1.4.2
 	golang.org/x/crypto v0.55.0
 )
 

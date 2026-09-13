@@ -44,6 +44,9 @@ func (r *R2) Put(ctx context.Context, key, contentType string, size int64, body 
 func (r *R2) Delete(ctx context.Context, key string) error {
 	return r.client.RemoveObject(ctx, r.bucket, key, minio.RemoveObjectOptions{})
 }
+func (r *R2) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	return r.client.GetObject(ctx, r.bucket, key, minio.GetObjectOptions{})
+}
 func (r *R2) URL(key string) string {
 	if r.publicURL == "" {
 		return ""

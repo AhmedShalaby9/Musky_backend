@@ -73,6 +73,7 @@ func New(db *sql.DB) *gin.Engine {
 	t.POST("/invoices/:id/post", a.postInvoice)
 	t.POST("/invoices/:id/void", a.voidInvoice)
 	t.POST("/invoices/:id/payments", a.createPayment)
+	t.POST("/invoices/:id/pdf", a.invoicePDF)
 	t.GET("/financial-summary", a.financialSummary)
 	t.POST("/files/upload", a.uploadOne)
 	t.POST("/files/uploads", a.uploadMany)
