@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"github.com/gvanbeck/nautilus/pdf/rtl"
 	"github.com/phpdave11/gofpdf"
 )
+
+//go:embed fonts/DejaVuSansCondensed.ttf
+var invoiceFont []byte
 
 func (a *API) invoicePDF(c *gin.Context) {
 	if a.files == nil {
@@ -45,10 +49,11 @@ func (a *API) invoicePDF(c *gin.Context) {
 	}
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	fontPath := os.Getenv("MUSKY_PDF_FONT_PATH")
-	font := "Helvetica"
+	font := "musky"
 	if fontPath != "" {
 		pdf.AddUTF8Font("musky", "", fontPath)
-		font = "musky"
+	} else {
+		pdf.AddUTF8FontFromBytes("musky", "", invoiceFont)
 	}
 	pdf.AddPage()
 	pdf.SetFont(font, "B", 20)
@@ -62,7 +67,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 	if invoice.Number != nil {
 		number = fmt.Sprintf("INV-%06d", *invoice.Number)
 	}
-	pdf.CellFormat(0, 7, fmt.Sprintf(arabic("رقم الفاتورة: %s    التاريخ: %s"), number, invoice.IssueDate), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 7, arabic(fmt.Sprintf("رقم الفاتورة: %s    التاريخ: %s", number, invoice.IssueDate)), "", 1, "R", false, 0, "")
 	pdf.Ln(5)
 	pdf.SetFillColor(224, 240, 238)
 	pdf.SetFont(font, "B", 12)
@@ -89,7 +94,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 	}
 	pdf.Ln(6)
 	pdf.SetFont(font, "B", 13)
-	pdf.CellFormat(0, 9, fmt.Sprintf(arabic("الإجمالي: %s    المدفوع: %s    المتبقي: %s"), moneyPDF(invoice.TotalMinor), moneyPDF(invoice.PaidMinor), moneyPDF(invoice.RemainingMinor)), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 9, arabic(fmt.Sprintf("الإجمالي: %s    المدفوع: %s    المتبقي: %s", moneyPDF(invoice.TotalMinor), moneyPDF(invoice.PaidMinor), moneyPDF(invoice.RemainingMinor))), "", 1, "R", false, 0, "")
 	if invoice.PaymentStatus != "" {
 		pdf.SetFont(font, "", 11)
 		pdf.CellFormat(0, 8, arabic("حالة الدفع: ")+invoice.PaymentStatus, "", 1, "R", false, 0, "")
