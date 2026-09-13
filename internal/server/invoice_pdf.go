@@ -52,8 +52,10 @@ func (a *API) invoicePDF(c *gin.Context) {
 	font := "musky"
 	if fontPath != "" {
 		pdf.AddUTF8Font("musky", "", fontPath)
+		pdf.AddUTF8Font("musky", "B", fontPath)
 	} else {
 		pdf.AddUTF8FontFromBytes("musky", "", invoiceFont)
+		pdf.AddUTF8FontFromBytes("musky", "B", invoiceFont)
 	}
 	pdf.AddPage()
 	pdf.SetFont(font, "B", 20)
