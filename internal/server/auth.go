@@ -11,7 +11,6 @@ import (
 	"musky/backend/internal/model"
 	"net/mail"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -49,49 +48,10 @@ func Bootstrap(ctx context.Context, db *sql.DB, name, email, password string) er
 	return err
 }
 
-type loginBucket struct {
-	count int
-	until time.Time
-}
-type loginLimiter struct {
-	sync.Mutex
-	buckets map[string]loginBucket
-}
-
-func newLoginLimiter() *loginLimiter { return &loginLimiter{buckets: make(map[string]loginBucket)} }
-func (l *loginLimiter) allow(ip string) bool {
-	l.Lock()
-	defer l.Unlock()
-	now := time.Now()
-	for key, b := range l.buckets {
-		if now.After(b.until) {
-			delete(l.buckets, key)
-		}
-	}
-	b, exists := l.buckets[ip]
-	if !exists {
-		if len(l.buckets) >= 10000 {
-			return false
-		}
-		b.until = now.Add(15 * time.Minute)
-	}
-	if b.count >= 20 {
-		return false
-	}
-	b.count++
-	l.buckets[ip] = b
-	return true
-}
-
 // A valid fixed hash makes unknown-account checks perform bcrypt work too.
 const dummyHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 func (a *API) login(c *gin.Context) {
-	if !a.limiter.allow(c.ClientIP()) {
-		c.Header("Retry-After", "900")
-		fail(c, 429, "too many login attempts; try again later")
-		return
-	}
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
