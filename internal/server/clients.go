@@ -142,7 +142,7 @@ func (a *API) deleteClient(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := a.db.ExecContext(c.Request.Context(), "DELETE FROM clients WHERE tenant_id=? AND id=?", tenantID(c), id)
+	res, err := a.db.ExecContext(c.Request.Context(), "UPDATE clients SET active=FALSE WHERE tenant_id=? AND id=?", tenantID(c), id)
 	if err != nil {
 		databaseError(c, err)
 		return
