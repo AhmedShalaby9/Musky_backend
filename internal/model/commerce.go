@@ -35,6 +35,7 @@ type Invoice struct {
 	CreatedAt       time.Time     `json:"created_at"`
 	PostedAt        *time.Time    `json:"posted_at"`
 	VoidedAt        *time.Time    `json:"voided_at"`
+	PdfURL          string        `json:"pdf_url"`
 	Items           []InvoiceItem `json:"items,omitempty"`
 	Payments        []Payment     `json:"payments,omitempty"`
 }

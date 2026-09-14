@@ -130,6 +130,11 @@ func (a *API) invoicePDF(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
+	_, err = a.db.ExecContext(context.Background(), "UPDATE invoices SET pdf_url=? WHERE tenant_id=? AND id=?", url, tenantID(c), id)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
 	c.JSON(201, gin.H{"invoice_id": id, "url": url, "key": key})
 }
 

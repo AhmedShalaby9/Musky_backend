@@ -11,12 +11,12 @@ import (
 	"time"
 )
 
-const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d'),client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at"
+const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d'),client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at,COALESCE(pdf_url,'')"
 const maxPrice int64 = 1000000000000
 
 func scanInvoice(row scanner) (model.Invoice, error) {
 	var v model.Invoice
-	err := row.Scan(&v.ID, &v.TenantID, &v.ClientID, &v.CreatedByUserID, &v.Number, &v.Status, &v.Currency, &v.IssueDate, &v.ClientName, &v.ClientAddress, &v.Notes, &v.VoidReason, &v.TotalMinor, &v.Version, &v.CreatedAt, &v.PostedAt, &v.VoidedAt)
+	err := row.Scan(&v.ID, &v.TenantID, &v.ClientID, &v.CreatedByUserID, &v.Number, &v.Status, &v.Currency, &v.IssueDate, &v.ClientName, &v.ClientAddress, &v.Notes, &v.VoidReason, &v.TotalMinor, &v.Version, &v.CreatedAt, &v.PostedAt, &v.VoidedAt, &v.PdfURL)
 	return v, err
 }
 func readInvoice(ctx context.Context, tx *sql.Tx, tenant, id uint64, lock bool) (model.Invoice, error) {
