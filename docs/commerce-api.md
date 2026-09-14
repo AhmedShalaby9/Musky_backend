@@ -79,6 +79,14 @@ Completed post/void/cancel transitions are idempotent: retrying the same transit
 
 Payments use `{"amount_minor":100000,"method":"cash","notes":""}` or `method:"online"`. Multiple payments are supported, overpayments are rejected, and invoice responses include `paid_minor`, `remaining_minor`, `payment_status` (`unpaid`, `partially_paid`, or `paid`) and `payments`. Financial summaries use the remaining client balance after payments.
 
+## Daily journal
+
+`GET /daily-journal?date=YYYY-MM-DD` lists payments received for the tenant on one calendar day. The date defaults to today in the Africa/Cairo timezone. Results include invoice/client payment and general client-receipt records, payment method, notes and timestamp, plus EGP totals split between all, cash and online payments. Reversed client receipts are excluded.
+
+```json
+{"date":"2026-09-15","currency":"EGP","totals":{"all_minor":100000,"cash_minor":60000,"online_minor":40000},"data":[]}
+```
+
 ## Financial overview
 
 `GET /financial-summary` returns:
