@@ -38,6 +38,7 @@ func Open(ctx context.Context, dsn string) (*sql.DB, error) {
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(3 * time.Minute)
+	db.SetConnMaxIdleTime(90 * time.Second)
 	if err = db.PingContext(ctx); err != nil {
 		db.Close()
 		return nil, err
