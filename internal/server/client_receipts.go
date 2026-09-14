@@ -41,7 +41,7 @@ func (a *API) createClientReceipt(c *gin.Context) {
 	).Scan(
 		new(uint64), new(uint64), new(uint64), new(string), new(interface{}),
 		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor,
+		&balanceMinor, new(interface{}),
 	)
 	if err != nil {
 		databaseError(c, err)
@@ -85,7 +85,7 @@ func (a *API) createClientReceipt(c *gin.Context) {
 	).Scan(
 		new(uint64), new(uint64), new(uint64), new(string), new(interface{}),
 		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor,
+		&balanceMinor, new(interface{}),
 	)
 
 	c.JSON(201, gin.H{"receipt": receipt, "balance_minor": balanceMinor})
@@ -175,7 +175,7 @@ func (a *API) clientLedger(c *gin.Context) {
 	).Scan(
 		new(uint64), new(uint64), new(uint64), &clientName, new(interface{}),
 		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor,
+		&balanceMinor, new(interface{}),
 	)
 	if err != nil {
 		databaseError(c, err)
