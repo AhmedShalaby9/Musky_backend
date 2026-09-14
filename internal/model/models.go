@@ -31,12 +31,16 @@ type User struct {
 
 // Clients are business contacts, never login accounts.
 type Client struct {
-	ID        uint64    `json:"id"`
-	TenantID  uint64    `json:"tenant_id"`
-	UserID    uint64    `json:"user_id"`
-	Name      string    `json:"name"`
-	Phone     string    `json:"phone"`
-	Address   string    `json:"address"`
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                  uint64    `json:"id"`
+	TenantID            uint64    `json:"tenant_id"`
+	UserID              uint64    `json:"user_id"`
+	Name                string    `json:"name"`
+	Phone               *string   `json:"phone"`
+	Address             string    `json:"address"`
+	Active              bool      `json:"active"`
+	OpeningBalanceMinor int64     `json:"opening_balance_minor"`
+	// BalanceMinor is computed: opening_balance_minor + posted invoices − payments.
+	// Positive = client owes us; negative = we owe client.
+	BalanceMinor        int64     `json:"balance_minor"`
+	CreatedAt           time.Time `json:"created_at"`
 }

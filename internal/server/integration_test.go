@@ -122,14 +122,9 @@ func TestMySQLTenantIsolation(t *testing.T) {
 		t.Fatal("cross-tenant list leak")
 	}
 	call("PATCH", clientPath, tr, `{"address":"123 Street"}`, 200)
-	call("PATCH", clientPath, tr, `{"active":false}`, 200)
 	call("DELETE", clientPath, tr, "", 204)
-	call("DELETE", clientPath, a, "", 204)
-	archived := call("GET", clientPath, a, "", 200)
-	if archived["active"] != false {
-		t.Fatal("client not archived")
-	}
-	call("PATCH", clientPath, a, `{"active":true}`, 200)
+	call("GET", clientPath, a, "", 404)
+	call("DELETE", clientPath, a, "", 404)
 	call("GET", p1+"/clients?limit=0", a, "", 400)
 	call("GET", p1+"/users/abc", a, "", 400)
 	call("GET", fmt.Sprintf("%s/users/%d", p1, owner2), a, "", 404)

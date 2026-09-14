@@ -70,7 +70,7 @@ Prefix: `/tenants/:tenantID/clients`. All authenticated roles can read/create/ed
 | POST | empty | Create client; 201 |
 | GET | `/:id` | Get client |
 | PATCH | `/:id` | Update supplied fields; 200 |
-| DELETE | `/:id` | Archive client; 204 |
+| DELETE | `/:id` | Delete client; 204. Returns 409 if referenced by invoices or payments |
 
 Creation example:
 
@@ -78,12 +78,10 @@ Creation example:
 {
   "name": "Client One",
   "phone": "01000000000",
-  "email": "client@example.com",
-  "address": "Cairo",
-  "notes": "Business contact"
+  "address": "Cairo"
 }
 ```
 
-`name` is required (1–150 characters). Optional fields: `phone` (40), `email` (valid email or empty, max 254), `address` (500), `notes` (2000), `user_id`, `active`. `user_id` defaults to the authenticated tenant user; the super admin must specify an active tenant user explicitly. The trader and supporting admins may assign/reassign to another active user in the same tenant and set `active` (archive/restore). PATCH supports the same fields, all optional, and requires at least one supplied value. Clear optional text with an empty string.
+`name` is required (1–150 characters). Optional fields: `phone` (max 40, nullable), `address` (500), `user_id`, `active`. `user_id` defaults to the authenticated tenant user; the super admin must specify an active tenant user explicitly. The trader and supporting admins may assign/reassign to another active user in the same tenant and set `active` (archive/restore). PATCH supports the same fields, all optional, and requires at least one supplied value. Clear optional text with an empty string or `null`.
 
 Responses contain `id`, `tenant_id`, `user_id`, the contact fields, `active` and `created_at`. Clients never log in. Product, invoice, stock and financial-summary endpoints are documented in [commerce-api.md](commerce-api.md).

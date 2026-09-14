@@ -417,7 +417,7 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 func (a *API) financialSummary(c *gin.Context) {
 	var receivables, payables, net int64
 	err := a.db.QueryRowContext(c.Request.Context(), `SELECT COALESCE(SUM(GREATEST(balance,0)),0),COALESCE(SUM(GREATEST(-balance,0)),0),COALESCE(SUM(balance),0)
- FROM (SELECT l.client_id,SUM(l.amount_minor)-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=l.tenant_id AND p.client_id=l.client_id),0) AS balance FROM client_ledger l WHERE l.tenant_id=? GROUP BY l.tenant_id,l.client_id) balances`, tenantID(c)).Scan(&receivables, &payables, &net)
+ FROM (SELECT c.opening_balance_minor+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0) AS balance FROM clients c WHERE c.tenant_id=?) balances`, tenantID(c)).Scan(&receivables, &payables, &net)
 	if err != nil {
 		databaseError(c, err)
 		return
