@@ -17,6 +17,14 @@ jobs:
       - name: Build
         run: go build -o musky-server ./cmd/server/
 
+      - name: Stop service
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          password: ${{ secrets.DEPLOY_PASSWORD }}
+          script: systemctl stop musky
+
       - name: Upload binary
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -27,7 +35,7 @@ jobs:
           target: /opt/musky/
           overwrite: true
 
-      - name: Restart service
+      - name: Start service
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -35,6 +43,6 @@ jobs:
           password: ${{ secrets.DEPLOY_PASSWORD }}
           script: |
             chmod +x /opt/musky/musky-server
-            systemctl restart musky
-            sleep 2
+            systemctl start musky
+            sleep 3
             systemctl is-active musky
