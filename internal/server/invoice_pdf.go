@@ -99,7 +99,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 	pdf.CellFormat(0, 9, arabic(fmt.Sprintf("الإجمالي: %s    المدفوع: %s    المتبقي: %s", moneyPDF(invoice.TotalMinor), moneyPDF(invoice.PaidMinor), moneyPDF(invoice.RemainingMinor))), "", 1, "R", false, 0, "")
 	if invoice.PaymentStatus != "" {
 		pdf.SetFont(font, "", 11)
-		pdf.CellFormat(0, 8, arabic("حالة الدفع: ")+invoice.PaymentStatus, "", 1, "R", false, 0, "")
+		pdf.CellFormat(0, 8, arabic("حالة الدفع: "+paymentStatusAr(invoice.PaymentStatus)), "", 1, "R", false, 0, "")
 	}
 	if logoKey != "" {
 		if rc, e := a.files.Get(c.Request.Context(), logoKey); e == nil {
@@ -135,4 +135,15 @@ func (a *API) invoicePDF(c *gin.Context) {
 
 func arabic(s string) string { return rtl.Shape(s) }
 
-func moneyPDF(minor int64) string { return fmt.Sprintf("EGP %d.%02d", minor/100, minor%100) }
+func moneyPDF(minor int64) string { return fmt.Sprintf("جنيه %d.%02d", minor/100, minor%100) }
+
+func paymentStatusAr(s string) string {
+	switch s {
+	case "paid":
+		return "مدفوع"
+	case "partially_paid":
+		return "مدفوع جزئياً"
+	default:
+		return "غير مدفوع"
+	}
+}
