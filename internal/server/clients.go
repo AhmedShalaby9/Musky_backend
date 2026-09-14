@@ -15,6 +15,7 @@ const clientDisplayCols = "c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c
 	"(c.opening_balance_minor" +
 	"+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)" +
 	"-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0)" +
+	"-COALESCE((SELECT SUM(IF(r.reversal_of_id IS NULL,r.amount_minor,-r.amount_minor)) FROM client_receipts r WHERE r.tenant_id=c.tenant_id AND r.client_id=c.id),0)" +
 	") AS balance_minor"
 
 // scanClientStored reads the 9 persisted columns. Used inside transactions where
