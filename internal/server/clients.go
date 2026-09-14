@@ -3,20 +3,26 @@ package server
 import (
 	"github.com/gin-gonic/gin"
 	"musky/backend/internal/model"
+	"strconv"
 	"strings"
 )
 
 // clientStoredCols selects the persisted columns only (no alias required).
 const clientStoredCols = "id,tenant_id,user_id,name,phone,address,active,opening_balance_minor,created_at"
 
-// clientDisplayCols selects all persisted columns (aliased to c.) plus a computed
-// balance_minor that sums the opening balance, posted-invoice amounts, and payments.
+// clientDisplayCols selects all persisted columns (aliased to c.) plus computed
+// balance_minor and last_payment_at.
 const clientDisplayCols = "c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at," +
 	"(c.opening_balance_minor" +
 	"+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)" +
 	"-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0)" +
 	"-COALESCE((SELECT SUM(IF(r.reversal_of_id IS NULL,r.amount_minor,-r.amount_minor)) FROM client_receipts r WHERE r.tenant_id=c.tenant_id AND r.client_id=c.id),0)" +
-	") AS balance_minor"
+	") AS balance_minor," +
+	"(SELECT MAX(t) FROM (" +
+	"SELECT MAX(p2.paid_at) AS t FROM invoice_payments p2 WHERE p2.tenant_id=c.tenant_id AND p2.client_id=c.id" +
+	" UNION ALL " +
+	"SELECT MAX(r2.received_at) FROM client_receipts r2 WHERE r2.tenant_id=c.tenant_id AND r2.client_id=c.id AND r2.reversal_of_id IS NULL" +
+	") _lp) AS last_payment_at"
 
 // scanClientStored reads the 9 persisted columns. Used inside transactions where
 // the full balance expression is not needed (e.g. FOR UPDATE row lock).
@@ -26,10 +32,10 @@ func scanClientStored(row scanner) (model.Client, error) {
 	return v, err
 }
 
-// scanClient reads 10 columns: the 9 persisted plus the computed balance_minor.
+// scanClient reads 11 columns: the 9 persisted plus balance_minor and last_payment_at.
 func scanClient(row scanner) (model.Client, error) {
 	var v model.Client
-	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt, &v.BalanceMinor)
+	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt, &v.BalanceMinor, &v.LastPaymentAt)
 	return v, err
 }
 
@@ -96,6 +102,15 @@ func (a *API) listClients(c *gin.Context) {
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		query += " AND (c.name LIKE ? OR c.phone LIKE ?)"
 		args = append(args, "%"+q+"%", "%"+q+"%")
+	}
+	if d := c.Query("days_without_payment"); d != "" {
+		days, err := strconv.Atoi(d)
+		if err != nil || days < 1 {
+			fail(c, 400, "days_without_payment must be a positive integer")
+			return
+		}
+		query += " HAVING last_payment_at IS NULL OR last_payment_at < UTC_TIMESTAMP() - INTERVAL ? DAY"
+		args = append(args, days)
 	}
 	query += " ORDER BY c.id LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)

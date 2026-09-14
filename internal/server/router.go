@@ -18,13 +18,14 @@ import (
 )
 
 type API struct {
-	db    *sql.DB
-	files *storage.R2
+	db      *sql.DB
+	files   *storage.R2
+	limiter *loginLimiter
 }
 
 func New(db *sql.DB) *gin.Engine {
 	files, _ := storage.NewR2FromEnv()
-	a := &API{db: db, files: files}
+	a := &API{db: db, files: files, limiter: newLoginLimiter()}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	_ = r.SetTrustedProxies(nil)

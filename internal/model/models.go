@@ -41,6 +41,8 @@ type Client struct {
 	OpeningBalanceMinor int64     `json:"opening_balance_minor"`
 	// BalanceMinor is computed: opening_balance_minor + posted invoices − payments.
 	// Positive = client owes us; negative = we owe client.
-	BalanceMinor        int64     `json:"balance_minor"`
-	CreatedAt           time.Time `json:"created_at"`
+	BalanceMinor        int64      `json:"balance_minor"`
+	// LastPaymentAt is the most recent invoice payment or general receipt date.
+	LastPaymentAt       *time.Time `json:"last_payment_at"`
+	CreatedAt           time.Time  `json:"created_at"`
 }

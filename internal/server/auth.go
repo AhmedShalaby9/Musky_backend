@@ -11,6 +11,7 @@ import (
 	"musky/backend/internal/model"
 	"net/mail"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,37 @@ func tokenHash(token string) string {
 	return hex.EncodeToString(hash[:])
 }
 
+type loginBucket struct {
+	count int
+	until time.Time
+}
+type loginLimiter struct {
+	sync.Mutex
+	buckets map[string]loginBucket
+}
+
+func newLoginLimiter() *loginLimiter { return &loginLimiter{buckets: make(map[string]loginBucket)} }
+func (l *loginLimiter) allow(ip string) bool {
+	l.Lock()
+	defer l.Unlock()
+	now := time.Now()
+	for key, bucket := range l.buckets {
+		if now.After(bucket.until) {
+			delete(l.buckets, key)
+		}
+	}
+	bucket, exists := l.buckets[ip]
+	if !exists {
+		bucket.until = now.Add(15 * time.Minute)
+	}
+	if bucket.count >= 20 {
+		return false
+	}
+	bucket.count++
+	l.buckets[ip] = bucket
+	return true
+}
+
 // Bootstrap creates the only super admin. Existing accounts are never reset.
 func Bootstrap(ctx context.Context, db *sql.DB, name, email, password string) error {
 	name, email = strings.TrimSpace(name), normalizeEmail(email)
@@ -52,6 +84,11 @@ func Bootstrap(ctx context.Context, db *sql.DB, name, email, password string) er
 const dummyHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 func (a *API) login(c *gin.Context) {
+	if !a.limiter.allow(c.ClientIP()) {
+		c.Header("Retry-After", "900")
+		fail(c, 429, "too many login attempts; try again later")
+		return
+	}
 	var in struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
