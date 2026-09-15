@@ -67,7 +67,6 @@ func New(db *sql.DB) *gin.Engine {
 	t.PATCH("/clients/:id", a.updateClient)
 	t.DELETE("/clients/:id", a.deleteClient)
 	t.POST("/clients/:id/receipts", a.createClientReceipt)
-	t.POST("/clients/:id/receipts/:rid/reverse", a.reverseClientReceipt)
 	t.GET("/clients/:id/ledger", a.clientLedger)
 	t.GET("/products", a.listProducts)
 	t.POST("/products", a.createProduct)

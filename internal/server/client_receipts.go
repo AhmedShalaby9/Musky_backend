@@ -1,7 +1,6 @@
 package server
 
 import (
-	"errors"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"musky/backend/internal/model"
@@ -79,60 +78,6 @@ func (a *API) createClientReceipt(c *gin.Context) {
 		return
 	}
 	c.JSON(201, gin.H{"receipt": receipt, "balance_minor": client.BalanceMinor})
-}
-
-func (a *API) reverseClientReceipt(c *gin.Context) {
-	clientID, ok := pathID(c, "id")
-	if !ok {
-		return
-	}
-	rid, ok := pathID(c, "rid")
-	if !ok {
-		return
-	}
-	tx, ok := a.commerceTx(c)
-	if !ok {
-		return
-	}
-	defer tx.Rollback()
-	var original model.ClientReceipt
-	result := tx.Where("tenant_id=? AND client_id=? AND id=?", tenantID(c), clientID, rid).First(&original)
-	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		fail(c, 404, "not found")
-		return
-	}
-	if result.Error != nil {
-		databaseError(c, result.Error)
-		return
-	}
-	if original.ReversalOfID != nil {
-		fail(c, 422, "لا يمكن عكس سجل عكس")
-		return
-	}
-	var existing model.ClientReceipt
-	check := tx.Where("tenant_id = ? AND client_id = ? AND reversal_of_id = ?", tenantID(c), clientID, rid).First(&existing)
-	if check.Error == nil {
-		fail(c, 409, "تم عكس هذه الدفعة مسبقاً")
-		return
-	}
-	if !errors.Is(check.Error, gorm.ErrRecordNotFound) {
-		databaseError(c, check.Error)
-		return
-	}
-	reversal := model.ClientReceipt{TenantID: tenantID(c), ClientID: clientID, ReceivedByUserID: actor(c).ID, AmountMinor: original.AmountMinor, Method: original.Method, Notes: original.Notes, ReversalOfID: &rid}
-	if err := tx.Create(&reversal).Error; err != nil {
-		databaseError(c, err)
-		return
-	}
-	if err := tx.Where("tenant_id = ? AND id = ?", tenantID(c), reversal.ID).Take(&reversal).Error; err != nil {
-		databaseError(c, err)
-		return
-	}
-	if err := tx.Commit().Error; err != nil {
-		databaseError(c, err)
-		return
-	}
-	c.JSON(201, reversal)
 }
 
 func (a *API) clientLedger(c *gin.Context) {
