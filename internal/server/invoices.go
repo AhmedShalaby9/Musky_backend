@@ -28,7 +28,7 @@ func readInvoice(ctx context.Context, tx *sql.Tx, tenant, id uint64, lock bool) 
 	if err != nil {
 		return v, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT product_id,title,code,pieces_per_unit,quantity,unit_price_minor,total_minor FROM invoice_items WHERE tenant_id=? AND invoice_id=? ORDER BY id", tenant, id)
+	rows, err := tx.QueryContext(ctx, "SELECT product_id,title,code,pieces_per_unit,quantity,units_per_package,package_count,unit_price_minor,total_minor FROM invoice_items WHERE tenant_id=? AND invoice_id=? ORDER BY id", tenant, id)
 	if err != nil {
 		return v, err
 	}
@@ -36,7 +36,7 @@ func readInvoice(ctx context.Context, tx *sql.Tx, tenant, id uint64, lock bool) 
 	v.Items = []model.InvoiceItem{}
 	for rows.Next() {
 		var item model.InvoiceItem
-		if err = rows.Scan(&item.ProductID, &item.Title, &item.Code, &item.PiecesPerUnit, &item.Quantity, &item.UnitPriceMinor, &item.TotalMinor); err != nil {
+		if err = rows.Scan(&item.ProductID, &item.Title, &item.Code, &item.PiecesPerUnit, &item.Quantity, &item.UnitsPerPackage, &item.PackageCount, &item.UnitPriceMinor, &item.TotalMinor); err != nil {
 			return v, err
 		}
 		v.Items = append(v.Items, item)
@@ -133,9 +133,11 @@ func (a *API) getInvoice(c *gin.Context) {
 }
 
 type invoiceLineInput struct {
-	ProductID      uint64 `json:"product_id"`
-	Quantity       int64  `json:"quantity"`
-	UnitPriceMinor *int64 `json:"unit_price_minor"`
+	ProductID       uint64 `json:"product_id"`
+	Quantity        int64  `json:"quantity"`
+	UnitsPerPackage *int64 `json:"units_per_package"`
+	PackageCount    *int64 `json:"package_count"`
+	UnitPriceMinor  *int64 `json:"unit_price_minor"`
 }
 type invoiceInput struct {
 	ClientID  uint64             `json:"client_id"`
@@ -145,11 +147,14 @@ type invoiceInput struct {
 	Version   int64              `json:"version"`
 }
 
-func lineTotal(quantity, price int64) (int64, bool) {
-	if quantity < 1 || quantity > maxQuantity || price < 0 || price > maxPrice || (price > 0 && quantity > maxTotal/price) {
+func lineTotal(unitPrice, unitsPerPackage, packageCount int64) (int64, bool) {
+	if unitPrice < 0 || unitPrice > maxPrice || unitsPerPackage < 1 || unitsPerPackage > maxQuantity || packageCount < 1 || packageCount > maxQuantity {
 		return 0, false
 	}
-	return quantity * price, true
+	if unitsPerPackage > maxTotal/packageCount || (unitPrice > 0 && unitPrice > maxTotal/(unitsPerPackage*packageCount)) {
+		return 0, false
+	}
+	return unitPrice * unitsPerPackage * packageCount, true
 }
 func (a *API) createInvoice(c *gin.Context) { a.saveInvoice(c, true) }
 func (a *API) updateInvoice(c *gin.Context) { a.saveInvoice(c, false) }
@@ -228,13 +233,23 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 			return
 		}
 		price := *line.UnitPriceMinor
-		amount, valid := lineTotal(line.Quantity, price)
+		// New clients send explicit carton semantics. Older clients are kept
+		// compatible by treating quantity as the carton count and one unit per carton.
+		unitsPerPackage := int64(1)
+		packageCount := line.Quantity
+		if line.UnitsPerPackage != nil {
+			unitsPerPackage = *line.UnitsPerPackage
+		}
+		if line.PackageCount != nil {
+			packageCount = *line.PackageCount
+		}
+		amount, valid := lineTotal(price, unitsPerPackage, packageCount)
 		if !valid || total > maxTotal-amount {
 			fail(c, 400, "invalid quantities, prices or invoice total limit exceeded")
 			return
 		}
 		total += amount
-		items = append(items, model.InvoiceItem{ProductID: p.ID, Title: p.Title, Code: p.Code, PiecesPerUnit: p.PiecesPerUnit, Quantity: line.Quantity, UnitPriceMinor: price, TotalMinor: amount})
+		items = append(items, model.InvoiceItem{ProductID: p.ID, Title: p.Title, Code: p.Code, PiecesPerUnit: unitsPerPackage, Quantity: packageCount, UnitsPerPackage: unitsPerPackage, PackageCount: packageCount, UnitPriceMinor: price, TotalMinor: amount})
 	}
 	if create {
 		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO invoices(tenant_id,client_id,created_by_user_id,issue_date,client_name,client_address,notes,total_minor) VALUES (?,?,?,?,?,?,?,?)", tenantID(c), in.ClientID, actor(c).ID, in.IssueDate, name, address, in.Notes, total)
@@ -259,7 +274,7 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		}
 	}
 	for _, item := range items {
-		if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO invoice_items(tenant_id,invoice_id,product_id,title,code,pieces_per_unit,quantity,unit_price_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?)", tenantID(c), id, item.ProductID, item.Title, item.Code, item.PiecesPerUnit, item.Quantity, item.UnitPriceMinor, item.TotalMinor); err != nil {
+		if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO invoice_items(tenant_id,invoice_id,product_id,title,code,pieces_per_unit,quantity,units_per_package,package_count,unit_price_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?)", tenantID(c), id, item.ProductID, item.Title, item.Code, item.PiecesPerUnit, item.Quantity, item.UnitsPerPackage, item.PackageCount, item.UnitPriceMinor, item.TotalMinor); err != nil {
 			databaseError(c, err)
 			return
 		}

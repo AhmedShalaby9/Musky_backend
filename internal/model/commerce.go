@@ -3,27 +3,27 @@ package model
 import "time"
 
 type ClientReceipt struct {
-	ID               uint64     `json:"id"`
-	TenantID         uint64     `json:"tenant_id"`
-	ClientID         uint64     `json:"client_id"`
-	ReceivedByUserID uint64     `json:"received_by_user_id"`
-	AmountMinor      int64      `json:"amount_minor"`
-	Method           string     `json:"method"`
-	Notes            string     `json:"notes"`
-	ReversalOfID     *uint64    `json:"reversal_of_id"`
-	ReceivedAt       time.Time  `json:"received_at"`
-	CreatedAt        time.Time  `json:"created_at"`
+	ID               uint64    `json:"id"`
+	TenantID         uint64    `json:"tenant_id"`
+	ClientID         uint64    `json:"client_id"`
+	ReceivedByUserID uint64    `json:"received_by_user_id"`
+	AmountMinor      int64     `json:"amount_minor"`
+	Method           string    `json:"method"`
+	Notes            string    `json:"notes"`
+	ReversalOfID     *uint64   `json:"reversal_of_id"`
+	ReceivedAt       time.Time `json:"received_at"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type LedgerEntry struct {
-	Kind           string     `json:"kind"`
-	RefID          *uint64    `json:"ref_id"`
-	InvoiceNumber  *int64     `json:"invoice_number"`
-	DeltaMinor     int64      `json:"delta_minor"`
-	RunningBalance int64      `json:"running_balance"`
-	Method         *string    `json:"method"`
-	Notes          string     `json:"notes"`
-	At             time.Time  `json:"at"`
+	Kind           string    `json:"kind"`
+	RefID          *uint64   `json:"ref_id"`
+	InvoiceNumber  *int64    `json:"invoice_number"`
+	DeltaMinor     int64     `json:"delta_minor"`
+	RunningBalance int64     `json:"running_balance"`
+	Method         *string   `json:"method"`
+	Notes          string    `json:"notes"`
+	At             time.Time `json:"at"`
 }
 
 // Product quantities are measured in whole boxes/packs, not pieces.
@@ -71,11 +71,13 @@ type Payment struct {
 	PaidAt      time.Time `json:"paid_at"`
 }
 type InvoiceItem struct {
-	ProductID      uint64 `json:"product_id"`
-	Title          string `json:"title"`
-	Code           string `json:"code"`
-	PiecesPerUnit  int64  `json:"pieces_per_unit"`
-	Quantity       int64  `json:"quantity"`
-	UnitPriceMinor int64  `json:"unit_price_minor"`
-	TotalMinor     int64  `json:"total_minor"`
+	ProductID       uint64 `json:"product_id"`
+	Title           string `json:"title"`
+	Code            string `json:"code"`
+	PiecesPerUnit   int64  `json:"pieces_per_unit"`
+	Quantity        int64  `json:"quantity"`
+	UnitsPerPackage int64  `json:"units_per_package"`
+	PackageCount    int64  `json:"package_count"`
+	UnitPriceMinor  int64  `json:"unit_price_minor"`
+	TotalMinor      int64  `json:"total_minor"`
 }

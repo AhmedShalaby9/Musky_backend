@@ -14,11 +14,11 @@ import (
 )
 
 func TestLineTotal(t *testing.T) {
-	if value, ok := lineTotal(3, 2950); !ok || value != 8850 {
-		t.Fatal("incorrect exact pack price")
+	if value, ok := lineTotal(2950, 12, 3); !ok || value != 106200 {
+		t.Fatal("incorrect unit/package/carton calculation")
 	}
-	for _, v := range [][2]int64{{0, 100}, {-1, 100}, {1, -1}, {1000000000, 1000000000000}, {1000000001, 1}} {
-		if _, ok := lineTotal(v[0], v[1]); ok {
+	for _, v := range [][3]int64{{-1, 1, 1}, {1, 0, 1}, {1, 1, 0}, {1000000000000, 1000000, 1000000000}} {
+		if _, ok := lineTotal(v[0], v[1], v[2]); ok {
 			t.Fatal("accepted invalid amount", v)
 		}
 	}
