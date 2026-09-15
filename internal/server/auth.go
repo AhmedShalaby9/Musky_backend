@@ -6,8 +6,8 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"errors"
 	"fmt"
+	"musky/backend/internal/database"
 	"musky/backend/internal/model"
 	"net/mail"
 	"strings"
@@ -76,8 +76,11 @@ func Bootstrap(ctx context.Context, db *sql.DB, name, email, password string) er
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, "INSERT INTO users(name,email,password_hash,role) VALUES (?,?,?,'super_admin')", name, email, hash)
-	return err
+	orm, err := database.ORM(db)
+	if err != nil {
+		return err
+	}
+	return orm.WithContext(ctx).Create(&userRecord{Name: name, Email: email, PasswordHash: hash, Role: model.SuperAdmin, Active: true}).Error
 }
 
 // A valid fixed hash makes unknown-account checks perform bcrypt work too.
@@ -101,13 +104,16 @@ func (a *API) login(c *gin.Context) {
 		fail(c, 401, "invalid email or password")
 		return
 	}
-	u, err := scanUser(a.db.QueryRowContext(c.Request.Context(), "SELECT "+userColumns+" FROM users WHERE email = ?", email))
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var u model.User
+	var err error
+	result := a.orm.WithContext(c.Request.Context()).Table("users").Select(userColumns).Where("email = ?", email).Limit(1).Scan(&u)
+	err = result.Error
+	if err != nil {
 		databaseError(c, err)
 		return
 	}
 	hash := u.PasswordHash
-	if errors.Is(err, sql.ErrNoRows) {
+	if result.RowsAffected == 0 {
 		hash = dummyHash
 	}
 	passwordErr := bcrypt.CompareHashAndPassword([]byte(hash), []byte(in.Password))
@@ -117,10 +123,15 @@ func (a *API) login(c *gin.Context) {
 	}
 	if u.TenantID != nil {
 		var active bool
-		if err = a.db.QueryRowContext(c.Request.Context(), "SELECT active,logo_url FROM tenants WHERE id = ?", *u.TenantID).Scan(&active, &u.LogoURL); err != nil {
+		var tenant struct {
+			Active  bool
+			LogoURL string
+		}
+		if err = a.orm.WithContext(c.Request.Context()).Table("tenants").Select("active,logo_url").Where("id = ?", *u.TenantID).Scan(&tenant).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
+		active, u.LogoURL = tenant.Active, tenant.LogoURL
 		if !active {
 			fail(c, 401, "invalid email or password")
 			return
@@ -133,21 +144,21 @@ func (a *API) login(c *gin.Context) {
 	}
 	token := hex.EncodeToString(raw)
 	expiry := time.Now().UTC().Add(24 * time.Hour)
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		databaseError(c, tx.Error)
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(c.Request.Context(), "DELETE FROM sessions WHERE user_id = ? AND expires_at <= UTC_TIMESTAMP(6)", u.ID); err != nil {
+	if err = tx.Where("user_id = ? AND expires_at <= UTC_TIMESTAMP(6)", u.ID).Delete(&sessionRecord{}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO sessions(token_hash,user_id,expires_at) VALUES (?,?,?)", tokenHash(token), u.ID, expiry); err != nil {
+	if err = tx.Create(&sessionRecord{TokenHash: tokenHash(token), UserID: u.ID, ExpiresAt: expiry}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -157,6 +168,9 @@ func (a *API) login(c *gin.Context) {
 func (a *API) me(c *gin.Context) {
 	u := actor(c)
 	a.populateLogo(c, &u)
+	if c.IsAborted() {
+		return
+	}
 	c.JSON(200, u)
 }
 
@@ -164,8 +178,11 @@ func (a *API) populateLogo(c *gin.Context, u *model.User) {
 	if u.TenantID == nil {
 		return
 	}
-	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT logo_url FROM tenants WHERE id = ?", *u.TenantID).Scan(&u.LogoURL); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	var tenant struct{ LogoURL string }
+	if err := a.orm.WithContext(c.Request.Context()).Table("tenants").Select("logo_url").Where("id = ?", *u.TenantID).Scan(&tenant).Error; err != nil {
 		databaseError(c, err)
+	} else {
+		u.LogoURL = tenant.LogoURL
 	}
 }
 func (a *API) authenticate(c *gin.Context) {
@@ -178,23 +195,28 @@ func (a *API) authenticate(c *gin.Context) {
 		fail(c, 401, "valid bearer token required")
 		return
 	}
-	u, err := scanUser(a.db.QueryRowContext(c.Request.Context(), `SELECT u.id,u.tenant_id,u.name,u.email,u.role,u.active,u.password_hash,u.created_at
- FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN tenants t ON t.id=u.tenant_id
- WHERE s.token_hash=? AND s.expires_at>UTC_TIMESTAMP(6) AND u.active=TRUE AND (u.tenant_id IS NULL OR t.active=TRUE)`, tokenHash(parts[1])))
-	if errors.Is(err, sql.ErrNoRows) {
+	var u model.User
+	result := a.orm.WithContext(c.Request.Context()).Table("sessions s").
+		Select("u.id,u.tenant_id,u.name,u.email,u.role,u.active,u.password_hash,u.created_at").
+		Joins("JOIN users u ON u.id = s.user_id").Joins("LEFT JOIN tenants t ON t.id = u.tenant_id").
+		Where("s.token_hash = ? AND s.expires_at > UTC_TIMESTAMP(6) AND u.active = TRUE AND (u.tenant_id IS NULL OR t.active = TRUE)", tokenHash(parts[1])).Scan(&u)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
 		fail(c, 401, "session expired or invalid")
 		return
 	}
-	if err != nil {
-		databaseError(c, err)
+	a.populateLogo(c, &u)
+	if c.IsAborted() {
 		return
 	}
-	a.populateLogo(c, &u)
 	c.Set("user", u)
 	c.Set("token_hash", tokenHash(parts[1]))
 }
 func (a *API) logout(c *gin.Context) {
-	if _, err := a.db.ExecContext(c.Request.Context(), "DELETE FROM sessions WHERE token_hash=?", c.GetString("token_hash")); err != nil {
+	if err := a.orm.WithContext(c.Request.Context()).Where("token_hash = ?", c.GetString("token_hash")).Delete(&sessionRecord{}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -218,27 +240,26 @@ func (a *API) changePassword(c *gin.Context) {
 		fail(c, 400, err.Error())
 		return
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		databaseError(c, tx.Error)
 		return
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(c.Request.Context(), "UPDATE users SET password_hash=? WHERE id=? AND password_hash=?", hash, u.ID, u.PasswordHash)
-	if err != nil {
-		databaseError(c, err)
+	result := tx.Model(&userRecord{}).Where("id = ? AND password_hash = ?", u.ID, u.PasswordHash).Update("password_hash", hash)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	n, _ := result.RowsAffected()
-	if n != 1 {
+	if result.RowsAffected != 1 {
 		fail(c, 409, "password changed; log in again")
 		return
 	}
-	if _, err = tx.ExecContext(c.Request.Context(), "DELETE FROM sessions WHERE user_id=?", u.ID); err != nil {
+	if err = tx.Where("user_id = ?", u.ID).Delete(&sessionRecord{}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}

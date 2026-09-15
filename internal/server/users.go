@@ -1,33 +1,52 @@
 package server
 
 import (
+	"errors"
+	"time"
+
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"musky/backend/internal/model"
 	"strings"
 )
+
+type userRecord struct {
+	ID           uint64
+	TenantID     *uint64
+	Name         string
+	Email        string
+	PasswordHash string
+	Role         model.Role
+	Active       bool
+	CreatedAt    time.Time
+}
+
+func (userRecord) TableName() string { return "users" }
+
+func userFromRecord(v userRecord) model.User {
+	return model.User{ID: v.ID, TenantID: v.TenantID, Name: v.Name, Email: v.Email, PasswordHash: v.PasswordHash, Role: v.Role, Active: v.Active, CreatedAt: v.CreatedAt}
+}
+
+type apiError struct {
+	status  int
+	message string
+}
+
+func (e apiError) Error() string { return e.message }
+
+func ptr[T any](v T) *T { return &v }
 
 func (a *API) listUsers(c *gin.Context) {
 	limit, offset, ok := pagination(c)
 	if !ok {
 		return
 	}
-	rows, err := a.db.QueryContext(c.Request.Context(), "SELECT "+userColumns+" FROM users WHERE tenant_id=? ORDER BY id LIMIT ? OFFSET ?", tenantID(c), limit, offset)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
-	data := []model.User{}
-	for rows.Next() {
-		u, err := scanUser(rows)
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		data = append(data, u)
-	}
-	if err = rows.Err(); err != nil {
-		databaseError(c, err)
+	var data []model.User
+	result := a.orm.WithContext(c.Request.Context()).Table("users").Select(userColumns).
+		Where("tenant_id = ?", tenantID(c)).Order("id").Limit(limit).Offset(offset).Scan(&data)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
 	c.JSON(200, gin.H{"data": data, "limit": limit, "offset": offset})
@@ -37,9 +56,15 @@ func (a *API) getUser(c *gin.Context) {
 	if !ok {
 		return
 	}
-	u, err := scanUser(a.db.QueryRowContext(c.Request.Context(), "SELECT "+userColumns+" FROM users WHERE tenant_id=? AND id=?", tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
+	var u model.User
+	result := a.orm.WithContext(c.Request.Context()).Table("users").Select(userColumns).
+		Where("tenant_id = ? AND id = ?", tenantID(c), id).Limit(1).Scan(&u)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
 		return
 	}
 	c.JSON(200, u)
@@ -62,22 +87,18 @@ func (a *API) createUser(c *gin.Context) {
 		fail(c, 500, "internal server error")
 		return
 	}
-	result, err := a.db.ExecContext(c.Request.Context(), "INSERT INTO users(tenant_id,name,email,password_hash,role) VALUES (?,?,?,?,?)", tenantID(c), in.Name, in.Email, hash, in.Role)
-	if err != nil {
+	u := userRecord{TenantID: ptr(tenantID(c)), Name: in.Name, Email: in.Email, PasswordHash: hash, Role: in.Role, Active: true}
+	if err := a.orm.WithContext(c.Request.Context()).Create(&u).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		databaseError(c, err)
+	var out model.User
+	result := a.orm.WithContext(c.Request.Context()).Table("users").Select(userColumns).Where("tenant_id = ? AND id = ?", tenantID(c), u.ID).Scan(&out)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	u, err := scanUser(a.db.QueryRowContext(c.Request.Context(), "SELECT "+userColumns+" FROM users WHERE tenant_id=? AND id=?", tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	c.JSON(201, u)
+	c.JSON(201, out)
 }
 
 type updateUserInput struct {
@@ -135,62 +156,63 @@ func (a *API) saveUser(c *gin.Context, in updateUserInput, deleted bool) {
 			return
 		}
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer tx.Rollback()
-	// Serialize account changes with tenant suspension and preserve the trader owner.
-	var tenant uint64
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT id FROM tenants WHERE id=? FOR UPDATE", tenantID(c)).Scan(&tenant); err != nil {
-		databaseError(c, err)
-		return
-	}
-	u, err := scanUser(tx.QueryRowContext(c.Request.Context(), "SELECT "+userColumns+" FROM users WHERE tenant_id=? AND id=? FOR UPDATE", tenant, id))
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	if u.Role == model.Trader && actor(c).Role != model.SuperAdmin {
-		fail(c, 403, "only super_admin can manage the trader account; use /me/password to change your password")
-		return
-	}
-	if in.Role != nil && *in.Role != u.Role {
-		fail(c, 409, "roles cannot be changed between trader owners and tenant admins")
-		return
-	}
-	if u.Role == model.Trader && in.Active != nil && !*in.Active {
-		fail(c, 409, "suspend the trader's tenant instead of deactivating its owner")
-		return
-	}
-	if in.Name != nil {
-		u.Name = *in.Name
-	}
-	if in.Email != nil {
-		u.Email = *in.Email
-	}
-	if in.Role != nil {
-		u.Role = *in.Role
-	}
-	if in.Active != nil {
-		u.Active = *in.Active
-	}
-	if in.Password != nil {
-		u.PasswordHash = hash
-	}
-	if _, err = tx.ExecContext(c.Request.Context(), "UPDATE users SET name=?,email=?,role=?,active=?,password_hash=? WHERE tenant_id=? AND id=?", u.Name, u.Email, u.Role, u.Active, u.PasswordHash, tenant, id); err != nil {
-		databaseError(c, err)
-		return
-	}
-	if in.Password != nil || in.Role != nil || in.Active != nil || in.Email != nil {
-		if _, err = tx.ExecContext(c.Request.Context(), "DELETE FROM sessions WHERE user_id=?", id); err != nil {
-			databaseError(c, err)
-			return
+	var u model.User
+	err := a.orm.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		var tenant struct{ ID uint64 }
+		if err := tx.Table("tenants").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", tenantID(c)).Select("id").Scan(&tenant).Error; err != nil {
+			return err
 		}
-	}
-	if err = tx.Commit(); err != nil {
-		databaseError(c, err)
+		if tenant.ID == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		var stored userRecord
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ? AND id = ?", tenant.ID, id).First(&stored)
+		if result.Error != nil {
+			return result.Error
+		}
+		u = userFromRecord(stored)
+		if u.Role == model.Trader && actor(c).Role != model.SuperAdmin {
+			return apiError{status: 403, message: "only super_admin can manage the trader account; use /me/password to change your password"}
+		}
+		if in.Role != nil && *in.Role != u.Role {
+			return apiError{status: 409, message: "roles cannot be changed between trader owners and tenant admins"}
+		}
+		if u.Role == model.Trader && in.Active != nil && !*in.Active {
+			return apiError{status: 409, message: "suspend the trader's tenant instead of deactivating its owner"}
+		}
+		if in.Name != nil {
+			u.Name = *in.Name
+		}
+		if in.Email != nil {
+			u.Email = *in.Email
+		}
+		if in.Role != nil {
+			u.Role = *in.Role
+		}
+		if in.Active != nil {
+			u.Active = *in.Active
+		}
+		if in.Password != nil {
+			u.PasswordHash = hash
+		}
+		updates := map[string]any{"name": u.Name, "email": u.Email, "role": u.Role, "active": u.Active, "password_hash": u.PasswordHash}
+		if err := tx.Model(&userRecord{}).Where("tenant_id = ? AND id = ?", tenant.ID, id).Updates(updates).Error; err != nil {
+			return err
+		}
+		if in.Password != nil || in.Role != nil || in.Active != nil || in.Email != nil {
+			if err := tx.Where("user_id = ?", id).Delete(&sessionRecord{}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		var e apiError
+		if errors.As(err, &e) {
+			fail(c, e.status, e.message)
+		} else {
+			databaseError(c, err)
+		}
 		return
 	}
 	if deleted {

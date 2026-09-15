@@ -63,29 +63,27 @@ func (a *API) uploadLogo(c *gin.Context) {
 		return
 	}
 	publicURL := a.files.URL(key)
-	res, err := a.db.ExecContext(c.Request.Context(), "INSERT INTO file_objects(tenant_id,uploaded_by_user_id,object_key,original_name,content_type,size_bytes,public_url) VALUES (?,?,?,?,?,?,?)", tenantID(c), actor(c).ID, key, h.Filename, contentType, h.Size, publicURL)
+	fileRow := fileRecord{TenantID: tenantID(c), UploadedByUserID: actor(c).ID, ObjectKey: key, OriginalName: h.Filename, ContentType: contentType, SizeBytes: h.Size, PublicURL: publicURL}
+	err = a.orm.WithContext(c.Request.Context()).Create(&fileRow).Error
 	if err != nil {
 		_ = a.files.Delete(c.Request.Context(), key)
 		databaseError(c, err)
 		return
 	}
-	fileID, err := res.LastInsertId()
-	if err != nil {
-		_ = a.files.Delete(c.Request.Context(), key)
-		databaseError(c, err)
-		return
-	}
+	fileID := fileRow.ID
 	var oldKey string
-	_ = a.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(f.object_key,'') FROM tenants t LEFT JOIN file_objects f ON f.id=t.logo_file_id WHERE t.id=?", tenantID(c)).Scan(&oldKey)
-	if _, err = a.db.ExecContext(c.Request.Context(), "UPDATE tenants SET logo_file_id=?,logo_url=? WHERE id=?", fileID, publicURL, tenantID(c)); err != nil {
+	var old struct{ ObjectKey string }
+	_ = a.orm.WithContext(c.Request.Context()).Table("tenants t").Select("COALESCE(f.object_key,'') AS object_key").Joins("LEFT JOIN file_objects f ON f.id=t.logo_file_id AND f.tenant_id=t.id").Where("t.id = ?", tenantID(c)).Scan(&old).Error
+	oldKey = old.ObjectKey
+	if err = a.orm.WithContext(c.Request.Context()).Model(&tenantRecord{}).Where("id = ?", tenantID(c)).Updates(map[string]any{"logo_file_id": fileID, "logo_url": publicURL}).Error; err != nil {
 		_ = a.files.Delete(c.Request.Context(), key)
-		_, _ = a.db.ExecContext(c.Request.Context(), "DELETE FROM file_objects WHERE id=?", fileID)
+		_ = a.orm.WithContext(c.Request.Context()).Where("tenant_id = ? AND id = ?", tenantID(c), fileID).Delete(&fileRecord{}).Error
 		databaseError(c, err)
 		return
 	}
 	if oldKey != "" {
 		_ = a.files.Delete(c.Request.Context(), oldKey)
-		_, _ = a.db.ExecContext(c.Request.Context(), "DELETE FROM file_objects WHERE object_key=?", oldKey)
+		_ = a.orm.WithContext(c.Request.Context()).Where("tenant_id = ? AND object_key = ?", tenantID(c), oldKey).Delete(&fileRecord{}).Error
 	}
 	c.JSON(http.StatusCreated, gin.H{"url": publicURL, "file_id": fileID})
 }
@@ -97,10 +95,15 @@ func (a *API) deleteLogo(c *gin.Context) {
 	}
 	var fileID uint64
 	var key string
-	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT COALESCE(t.logo_file_id,0),COALESCE(f.object_key,'') FROM tenants t LEFT JOIN file_objects f ON f.id=t.logo_file_id WHERE t.id=?", tenantID(c)).Scan(&fileID, &key); err != nil {
+	var logo struct {
+		FileID    uint64
+		ObjectKey string
+	}
+	if err := a.orm.WithContext(c.Request.Context()).Table("tenants t").Select("COALESCE(t.logo_file_id,0) AS file_id,COALESCE(f.object_key,'') AS object_key").Joins("LEFT JOIN file_objects f ON f.id=t.logo_file_id AND f.tenant_id=t.id").Where("t.id = ?", tenantID(c)).Scan(&logo).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
+	fileID, key = logo.FileID, logo.ObjectKey
 	if fileID == 0 {
 		c.Status(http.StatusNoContent)
 		return
@@ -111,7 +114,7 @@ func (a *API) deleteLogo(c *gin.Context) {
 			return
 		}
 	}
-	if _, err := a.db.ExecContext(c.Request.Context(), "UPDATE tenants SET logo_file_id=NULL,logo_url='' WHERE id=?", tenantID(c)); err != nil {
+	if err := a.orm.WithContext(c.Request.Context()).Model(&tenantRecord{}).Where("id = ?", tenantID(c)).Updates(map[string]any{"logo_file_id": nil, "logo_url": ""}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -185,19 +188,14 @@ func (a *API) upload(c *gin.Context, multiple bool) {
 			return
 		}
 		url := a.files.URL(key)
-		res, err := a.db.ExecContext(c.Request.Context(), "INSERT INTO file_objects(tenant_id,uploaded_by_user_id,object_key,original_name,content_type,size_bytes,public_url) VALUES (?,?,?,?,?,?,?)", tenantID(c), actor(c).ID, key, header.Filename, header.Header.Get("Content-Type"), header.Size, url)
+		fileRow := fileRecord{TenantID: tenantID(c), UploadedByUserID: actor(c).ID, ObjectKey: key, OriginalName: header.Filename, ContentType: header.Header.Get("Content-Type"), SizeBytes: header.Size, PublicURL: url}
+		err = a.orm.WithContext(c.Request.Context()).Create(&fileRow).Error
 		if err != nil {
 			_ = a.files.Delete(c.Request.Context(), key)
 			databaseError(c, err)
 			return
 		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			_ = a.files.Delete(c.Request.Context(), key)
-			databaseError(c, err)
-			return
-		}
-		uploaded = append(uploaded, result{ID: uint64(id), Name: header.Filename, ContentType: header.Header.Get("Content-Type"), Size: header.Size, URL: url, Key: key})
+		uploaded = append(uploaded, result{ID: fileRow.ID, Name: header.Filename, ContentType: header.Header.Get("Content-Type"), Size: header.Size, URL: url, Key: key})
 	}
 	if multiple {
 		c.JSON(201, gin.H{"files": uploaded})
@@ -210,12 +208,6 @@ func (a *API) listFiles(c *gin.Context) {
 	if !ok {
 		return
 	}
-	rows, err := a.db.QueryContext(c.Request.Context(), "SELECT id,original_name,content_type,size_bytes,public_url,created_at FROM file_objects WHERE tenant_id=? ORDER BY id DESC LIMIT ? OFFSET ?", tenantID(c), limit, offset)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
 	type file struct {
 		ID          uint64    `json:"id"`
 		Name        string    `json:"name"`
@@ -225,35 +217,33 @@ func (a *API) listFiles(c *gin.Context) {
 		CreatedAt   time.Time `json:"created_at"`
 	}
 	out := []file{}
-	for rows.Next() {
-		var v file
-		if err = rows.Scan(&v.ID, &v.Name, &v.ContentType, &v.Size, &v.URL, &v.CreatedAt); err != nil {
-			databaseError(c, err)
-			return
-		}
-		out = append(out, v)
-	}
-	if err = rows.Err(); err != nil {
+	if err := a.orm.WithContext(c.Request.Context()).Table("file_objects").Select("id,original_name AS name,content_type,size_bytes AS size,public_url AS url,created_at").Where("tenant_id = ?", tenantID(c)).Order("id DESC").Limit(limit).Offset(offset).Scan(&out).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"data": out, "limit": limit, "offset": offset})
 }
 func (a *API) deleteFile(c *gin.Context) {
+	if a.files == nil {
+		fail(c, 503, "file storage is not configured")
+		return
+	}
 	id, ok := pathID(c, "id")
 	if !ok {
 		return
 	}
 	var key string
-	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT object_key FROM file_objects WHERE tenant_id=? AND id=?", tenantID(c), id).Scan(&key); err != nil {
+	var file struct{ ObjectKey string }
+	if err := a.orm.WithContext(c.Request.Context()).Table("file_objects").Select("object_key").Where("tenant_id = ? AND id = ?", tenantID(c), id).Take(&file).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
+	key = file.ObjectKey
 	if err := a.files.Delete(c.Request.Context(), key); err != nil {
 		fail(c, 502, "file storage deletion failed")
 		return
 	}
-	if _, err := a.db.ExecContext(c.Request.Context(), "DELETE FROM file_objects WHERE tenant_id=? AND id=?", tenantID(c), id); err != nil {
+	if err := a.orm.WithContext(c.Request.Context()).Where("tenant_id = ? AND id = ?", tenantID(c), id).Delete(&fileRecord{}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}

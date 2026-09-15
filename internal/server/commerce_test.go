@@ -82,26 +82,26 @@ func TestMySQLCommerce(t *testing.T) {
 	foreign := call("POST", other+"/clients", b, `{"name":"Client B"}`, 201)
 	cid := int(client["id"].(float64))
 	foreignID := int(foreign["id"].(float64))
-	product := call("POST", p+"/products", a, `{"title":"Tea pack","code":"TEA","quantity":10,"pieces_per_unit":12,"unit_price_minor":2950}`, 201)
+	product := call("POST", p+"/products", a, `{"title":"Tea pack","code":"TEA","quantity":10,"pieces_per_unit":12}`, 201)
 	pid := int(product["id"].(float64))
 	productPath := fmt.Sprintf("%s/products/%d", p, pid)
-	call("POST", p+"/products", a, `{"title":"Duplicate","code":"TEA","quantity":1,"pieces_per_unit":1,"unit_price_minor":1}`, 409)
-	foreignProduct := call("POST", other+"/products", b, `{"title":"Other tea","code":"TEA","quantity":1,"pieces_per_unit":1,"unit_price_minor":1}`, 201)
+	call("POST", p+"/products", a, `{"title":"Duplicate","code":"TEA","quantity":1,"pieces_per_unit":1}`, 409)
+	foreignProduct := call("POST", other+"/products", b, `{"title":"Other tea","code":"TEA","quantity":1,"pieces_per_unit":1}`, 201)
 	fpid := int(foreignProduct["id"].(float64))
 	call("GET", productPath, b, "", 404)
 	call("GET", fmt.Sprintf("%s/products/%d", other, pid), b, "", 404)
 	call("PATCH", fmt.Sprintf("%s/products/%d", other, pid), b, `{"version":1,"quantity":999}`, 404)
 	call("DELETE", fmt.Sprintf("%s/products/%d?version=1", other, pid), b, "", 404)
-	call("POST", p+"/products", a, `{"title":"Bad","code":"BAD","quantity":-1,"pieces_per_unit":12,"unit_price_minor":100}`, 400)
+	call("POST", p+"/products", a, `{"title":"Bad","code":"BAD","quantity":-1,"pieces_per_unit":12}`, 400)
 	body := func(client, product int, qty int64) string {
-		return fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"quantity":%d,"unit_price_minor":2950}]}`, client, product, qty)
+		return fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"quantity":%d,"units_per_package":12,"unit_price_minor":2950}]}`, client, product, qty)
 	}
 	call("POST", p+"/invoices", a, body(foreignID, pid, 1), 404)
 	call("POST", p+"/invoices", a, body(cid, fpid, 1), 404)
 	inv := call("POST", p+"/invoices", a, body(cid, pid, 3), 201)
 	iid := int(inv["id"].(float64))
 	invoicePath := fmt.Sprintf("%s/invoices/%d", p, iid)
-	if inv["total_minor"] != float64(8850) || inv["currency"] != "EGP" {
+	if inv["total_minor"] != float64(106200) || inv["currency"] != "EGP" {
 		t.Fatal("incorrect money", inv)
 	}
 	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(10) {
@@ -111,7 +111,7 @@ func TestMySQLCommerce(t *testing.T) {
 	call("GET", fmt.Sprintf("%s/invoices/%d", other, iid), b, "", 404)
 	call("POST", fmt.Sprintf("%s/invoices/%d/post", other, iid), b, `{"version":1}`, 404)
 	call("PUT", fmt.Sprintf("%s/invoices/%d", other, iid), b, strings.TrimSuffix(body(cid, pid, 2), "}")+`,"version":1}`, 404)
-	call("PATCH", productPath, a, `{"version":1,"title":"New tea title","unit_price_minor":5000}`, 200)
+	call("PATCH", productPath, a, `{"version":1,"title":"New tea title"}`, 200)
 	posted := call("POST", invoicePath+"/post", a, `{"version":1}`, 200)
 	if posted["status"] != "posted" || posted["number"] != float64(1) {
 		t.Fatal("not posted", posted)
@@ -128,16 +128,16 @@ func TestMySQLCommerce(t *testing.T) {
 	call("PUT", invoicePath, a, strings.TrimSuffix(body(cid, pid, 1), "}")+`,"version":2}`, 409)
 	call("DELETE", invoicePath+"?version=2", a, "", 409)
 	summary := call("GET", p+"/financial-summary", a, "", 200)
-	if summary["receivables_minor"] != float64(8850) || summary["payables_minor"] != float64(0) || summary["net_minor"] != float64(8850) {
+	if summary["receivables_minor"] != float64(106200) || summary["payables_minor"] != float64(0) || summary["net_minor"] != float64(106200) {
 		t.Fatal("wrong ledger summary", summary)
 	}
 	if sum := call("GET", other+"/financial-summary", b, "", 200)["net_minor"]; sum != float64(0) {
 		t.Fatal("ledger leaked")
 	}
 	// If any line lacks stock, all earlier line effects must roll back.
-	empty := call("POST", p+"/products", a, `{"title":"Empty","code":"EMPTY","quantity":0,"pieces_per_unit":2,"unit_price_minor":100}`, 201)
+	empty := call("POST", p+"/products", a, `{"title":"Empty","code":"EMPTY","quantity":0,"pieces_per_unit":2}`, 201)
 	emptyID := int(empty["id"].(float64))
-	multi := call("POST", p+"/invoices", a, fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"quantity":1},{"product_id":%d,"quantity":1}]}`, cid, pid, emptyID), 201)
+	multi := call("POST", p+"/invoices", a, fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"quantity":1,"units_per_package":12,"unit_price_minor":2950},{"product_id":%d,"quantity":1,"units_per_package":2,"unit_price_minor":100}]}`, cid, pid, emptyID), 201)
 	call("POST", fmt.Sprintf("%s/invoices/%.0f/post", p, multi["id"]), a, `{"version":1}`, 409)
 	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(7) {
 		t.Fatal("failed invoice changed stock", q)
@@ -177,13 +177,13 @@ func TestMySQLCommerce(t *testing.T) {
 	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(4) {
 		t.Fatal("void did not restore exactly three packs", q)
 	}
-	if sum := call("GET", p+"/financial-summary", a, "", 200)["net_minor"]; sum != float64(17700) {
+	if sum := call("GET", p+"/financial-summary", a, "", 200)["net_minor"]; sum != float64(212400) {
 		t.Fatal("void did not reverse debt", sum)
 	}
 	draft := call("POST", p+"/invoices", a, body(cid, pid, 1), 201)
 	draftPath := fmt.Sprintf("%s/invoices/%.0f", p, draft["id"])
 	updated := call("PUT", draftPath, a, strings.TrimSuffix(body(cid, pid, 2), "}")+`,"version":1}`, 200)
-	if updated["total_minor"] != float64(5900) {
+	if updated["total_minor"] != float64(70800) {
 		t.Fatal("draft edit totals")
 	}
 	call("PUT", draftPath, a, strings.TrimSuffix(body(cid, pid, 2), "}")+`,"version":1}`, 409)

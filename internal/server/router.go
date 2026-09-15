@@ -13,19 +13,25 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
+	"gorm.io/gorm"
+	"musky/backend/internal/database"
 	"musky/backend/internal/model"
 	"musky/backend/internal/storage"
 )
 
 type API struct {
-	db      *sql.DB
+	orm     *gorm.DB
 	files   *storage.R2
 	limiter *loginLimiter
 }
 
 func New(db *sql.DB) *gin.Engine {
 	files, _ := storage.NewR2FromEnv()
-	a := &API{db: db, files: files, limiter: newLoginLimiter()}
+	orm, err := database.ORM(db)
+	if err != nil {
+		panic("could not initialize GORM: " + err.Error())
+	}
+	a := &API{orm: orm, files: files, limiter: newLoginLimiter()}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	_ = r.SetTrustedProxies(nil)
@@ -94,7 +100,7 @@ func fail(c *gin.Context, code int, message string) {
 func databaseError(c *gin.Context, err error) {
 	var me *mysql.MySQLError
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, sql.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound):
 		fail(c, 404, "not found")
 	case errors.As(err, &me) && me.Number == 1062:
 		fail(c, 409, "record already exists")
@@ -167,24 +173,22 @@ func (a *API) tenantScope(c *gin.Context) {
 		fail(c, 404, "not found")
 		return
 	}
-	var active bool
-	if err := a.db.QueryRowContext(c.Request.Context(), "SELECT active FROM tenants WHERE id = ?", id).Scan(&active); err != nil {
-		databaseError(c, err)
+	var tenant model.Tenant
+	result := a.orm.WithContext(c.Request.Context()).Table("tenants").Select("active").
+		Where("id = ?", id).Limit(1).Scan(&tenant)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	if !active {
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	if !tenant.Active {
 		fail(c, 403, "tenant is inactive")
 		return
 	}
 	c.Set("tenant_id", id)
 }
 
-type scanner interface{ Scan(...any) error }
-
 const userColumns = "id, tenant_id, name, email, role, active, password_hash, created_at"
-
-func scanUser(row scanner) (model.User, error) {
-	var u model.User
-	err := row.Scan(&u.ID, &u.TenantID, &u.Name, &u.Email, &u.Role, &u.Active, &u.PasswordHash, &u.CreatedAt)
-	return u, err
-}

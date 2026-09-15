@@ -1,9 +1,9 @@
 package server
 
 import (
-	"database/sql"
-
+	"errors"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"musky/backend/internal/model"
 )
 
@@ -14,9 +14,19 @@ type receiptInput struct {
 }
 
 func (in *receiptInput) valid() bool {
-	return in.AmountMinor >= 1 && in.AmountMinor <= 1000000000000 &&
-		(in.Method == "cash" || in.Method == "online") &&
-		validText(in.Notes, 0, 500)
+	return in.AmountMinor >= 1 && in.AmountMinor <= 1000000000000 && (in.Method == "cash" || in.Method == "online") && validText(in.Notes, 0, 500)
+}
+
+func clientBalance(db *gorm.DB, tenant, id uint64) (model.Client, error) {
+	var client model.Client
+	result := clientDisplayQuery(db, tenant).Where("c.id = ?", id).Scan(&client)
+	if result.Error != nil {
+		return client, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return client, gorm.ErrRecordNotFound
+	}
+	return client, nil
 }
 
 func (a *API) createClientReceipt(c *gin.Context) {
@@ -32,63 +42,43 @@ func (a *API) createClientReceipt(c *gin.Context) {
 		fail(c, 400, "invalid receipt fields")
 		return
 	}
-
-	// Read current balance for the client.
-	var balanceMinor int64
-	err := a.db.QueryRowContext(c.Request.Context(),
-		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
-		tenantID(c), clientID,
-	).Scan(
-		new(uint64), new(uint64), new(uint64), new(string), new(interface{}),
-		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor, new(interface{}),
-	)
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	client, err := clientBalance(tx, tenantID(c), clientID)
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
-	if balanceMinor <= 0 {
+	if client.BalanceMinor <= 0 {
 		fail(c, 422, "رصيد العميل صفر أو دائن، لا يمكن تسجيل دفعة")
 		return
 	}
-	if in.AmountMinor > balanceMinor {
+	if in.AmountMinor > client.BalanceMinor {
 		fail(c, 422, "المبلغ أكبر من رصيد العميل")
 		return
 	}
-
-	res, err := a.db.ExecContext(c.Request.Context(),
-		"INSERT INTO client_receipts(tenant_id,client_id,received_by_user_id,amount_minor,method,notes) VALUES (?,?,?,?,?,?)",
-		tenantID(c), clientID, actor(c).ID, in.AmountMinor, in.Method, in.Notes,
-	)
+	receipt := model.ClientReceipt{TenantID: tenantID(c), ClientID: clientID, ReceivedByUserID: actor(c).ID, AmountMinor: in.AmountMinor, Method: in.Method, Notes: in.Notes}
+	if err := tx.Create(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Where("tenant_id = ? AND id = ?", tenantID(c), receipt.ID).Take(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	client, err = clientBalance(tx, tenantID(c), clientID)
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
-	id, _ := res.LastInsertId()
-
-	var receipt model.ClientReceipt
-	err = a.db.QueryRowContext(c.Request.Context(),
-		"SELECT id,tenant_id,client_id,received_by_user_id,amount_minor,method,notes,reversal_of_id,received_at,created_at FROM client_receipts WHERE id=?",
-		id,
-	).Scan(&receipt.ID, &receipt.TenantID, &receipt.ClientID, &receipt.ReceivedByUserID,
-		&receipt.AmountMinor, &receipt.Method, &receipt.Notes, &receipt.ReversalOfID,
-		&receipt.ReceivedAt, &receipt.CreatedAt)
-	if err != nil {
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-
-	// Re-read updated balance.
-	_ = a.db.QueryRowContext(c.Request.Context(),
-		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
-		tenantID(c), clientID,
-	).Scan(
-		new(uint64), new(uint64), new(uint64), new(string), new(interface{}),
-		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor, new(interface{}),
-	)
-
-	c.JSON(201, gin.H{"receipt": receipt, "balance_minor": balanceMinor})
+	c.JSON(201, gin.H{"receipt": receipt, "balance_minor": client.BalanceMinor})
 }
 
 func (a *API) reverseClientReceipt(c *gin.Context) {
@@ -100,60 +90,45 @@ func (a *API) reverseClientReceipt(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	// Read original receipt; must belong to same tenant/client and not be a reversal itself.
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
 	var original model.ClientReceipt
-	err := a.db.QueryRowContext(c.Request.Context(),
-		"SELECT id,tenant_id,client_id,received_by_user_id,amount_minor,method,notes,reversal_of_id,received_at,created_at FROM client_receipts WHERE tenant_id=? AND client_id=? AND id=?",
-		tenantID(c), clientID, rid,
-	).Scan(&original.ID, &original.TenantID, &original.ClientID, &original.ReceivedByUserID,
-		&original.AmountMinor, &original.Method, &original.Notes, &original.ReversalOfID,
-		&original.ReceivedAt, &original.CreatedAt)
-	if err == sql.ErrNoRows {
+	result := tx.Where("tenant_id=? AND client_id=? AND id=?", tenantID(c), clientID, rid).First(&original)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		fail(c, 404, "not found")
 		return
 	}
-	if err != nil {
-		databaseError(c, err)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
 	if original.ReversalOfID != nil {
 		fail(c, 422, "لا يمكن عكس سجل عكس")
 		return
 	}
-
-	// Check no existing reversal already exists for this receipt.
-	var existingReversal uint64
-	err = a.db.QueryRowContext(c.Request.Context(),
-		"SELECT id FROM client_receipts WHERE reversal_of_id=?", rid,
-	).Scan(&existingReversal)
-	if err == nil {
+	var existing model.ClientReceipt
+	check := tx.Where("tenant_id = ? AND client_id = ? AND reversal_of_id = ?", tenantID(c), clientID, rid).First(&existing)
+	if check.Error == nil {
 		fail(c, 409, "تم عكس هذه الدفعة مسبقاً")
 		return
 	}
-	if err != sql.ErrNoRows {
+	if !errors.Is(check.Error, gorm.ErrRecordNotFound) {
+		databaseError(c, check.Error)
+		return
+	}
+	reversal := model.ClientReceipt{TenantID: tenantID(c), ClientID: clientID, ReceivedByUserID: actor(c).ID, AmountMinor: original.AmountMinor, Method: original.Method, Notes: original.Notes, ReversalOfID: &rid}
+	if err := tx.Create(&reversal).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-
-	res, err := a.db.ExecContext(c.Request.Context(),
-		"INSERT INTO client_receipts(tenant_id,client_id,received_by_user_id,amount_minor,method,notes,reversal_of_id) VALUES (?,?,?,?,?,?,?)",
-		tenantID(c), clientID, actor(c).ID, original.AmountMinor, original.Method, original.Notes, rid,
-	)
-	if err != nil {
+	if err := tx.Where("tenant_id = ? AND id = ?", tenantID(c), reversal.ID).Take(&reversal).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	newID, _ := res.LastInsertId()
-
-	var reversal model.ClientReceipt
-	err = a.db.QueryRowContext(c.Request.Context(),
-		"SELECT id,tenant_id,client_id,received_by_user_id,amount_minor,method,notes,reversal_of_id,received_at,created_at FROM client_receipts WHERE id=?",
-		newID,
-	).Scan(&reversal.ID, &reversal.TenantID, &reversal.ClientID, &reversal.ReceivedByUserID,
-		&reversal.AmountMinor, &reversal.Method, &reversal.Notes, &reversal.ReversalOfID,
-		&reversal.ReceivedAt, &reversal.CreatedAt)
-	if err != nil {
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -165,89 +140,31 @@ func (a *API) clientLedger(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	// Read client name and balance.
-	var clientName string
-	var balanceMinor int64
-	err := a.db.QueryRowContext(c.Request.Context(),
-		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
-		tenantID(c), clientID,
-	).Scan(
-		new(uint64), new(uint64), new(uint64), &clientName, new(interface{}),
-		new(string), new(bool), new(int64), new(interface{}),
-		&balanceMinor, new(interface{}),
-	)
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil { databaseError(c, tx.Error); return }
+	defer tx.Rollback()
+	client, err := clientBalance(tx, tenantID(c), clientID)
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
-
-	const q = `
-SELECT 'opening' AS kind, NULL AS ref_id, NULL AS invoice_number,
-       c.opening_balance_minor AS delta_minor,
-       NULL AS method, '' AS notes, c.created_at AS at
-FROM clients c WHERE c.tenant_id=? AND c.id=?
-
-UNION ALL
-
-SELECT l.kind, i.id, i.number, l.amount_minor,
-       NULL, COALESCE(i.void_reason,''),
-       COALESCE(i.posted_at, i.voided_at)
-FROM client_ledger l JOIN invoices i ON i.id=l.invoice_id
-WHERE l.tenant_id=? AND l.client_id=?
-
-UNION ALL
-
-SELECT 'invoice_payment', p.invoice_id, i.number, -p.amount_minor,
-       p.method, p.notes, p.paid_at
-FROM invoice_payments p JOIN invoices i ON i.id=p.invoice_id
-WHERE p.tenant_id=? AND p.client_id=?
-
-UNION ALL
-
-SELECT IF(r.reversal_of_id IS NULL,'receipt','reversal'),
-       r.id, NULL,
-       IF(r.reversal_of_id IS NULL,-r.amount_minor,r.amount_minor),
-       r.method, r.notes, r.received_at
-FROM client_receipts r WHERE r.tenant_id=? AND r.client_id=?
-
-ORDER BY at ASC
-`
-	rows, err := a.db.QueryContext(c.Request.Context(), q,
-		tenantID(c), clientID,
-		tenantID(c), clientID,
-		tenantID(c), clientID,
-		tenantID(c), clientID,
-	)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
-
-	var running int64
+	opening := tx.Table("clients c").Select("'opening' AS kind, NULL AS ref_id, NULL AS invoice_number, c.opening_balance_minor AS delta_minor, NULL AS method, '' AS notes, c.created_at AS at").Where("c.tenant_id = ? AND c.id = ?", tenantID(c), clientID)
+	ledger := tx.Table("client_ledger l").Select("l.kind, i.id AS ref_id, i.number AS invoice_number, l.amount_minor AS delta_minor, NULL AS method, COALESCE(i.void_reason,'') AS notes, CASE WHEN l.kind='void' THEN i.voided_at ELSE i.posted_at END AS at").Joins("JOIN invoices i ON i.id=l.invoice_id AND i.tenant_id=l.tenant_id").Where("l.tenant_id = ? AND l.client_id = ?", tenantID(c), clientID)
+	payments := tx.Table("invoice_payments p").Select("'invoice_payment' AS kind, p.invoice_id AS ref_id, i.number AS invoice_number, -p.amount_minor AS delta_minor, p.method, p.notes, p.paid_at AS at").Joins("JOIN invoices i ON i.id=p.invoice_id AND i.tenant_id=p.tenant_id").Where("p.tenant_id = ? AND p.client_id = ?", tenantID(c), clientID)
+	receipts := tx.Model(&model.ClientReceipt{}).Select("IF(reversal_of_id IS NULL,'receipt','reversal') AS kind, id AS ref_id, NULL AS invoice_number, IF(reversal_of_id IS NULL,-amount_minor,amount_minor) AS delta_minor, method, notes, received_at AS at").Where("tenant_id = ? AND client_id = ?", tenantID(c), clientID)
 	entries := []model.LedgerEntry{}
-	for rows.Next() {
-		var e model.LedgerEntry
-		if err = rows.Scan(&e.Kind, &e.RefID, &e.InvoiceNumber, &e.DeltaMinor, &e.Method, &e.Notes, &e.At); err != nil {
-			databaseError(c, err)
-			return
-		}
-		running += e.DeltaMinor
-		e.RunningBalance = running
-		entries = append(entries, e)
-	}
-	if err = rows.Err(); err != nil {
+	if err := tx.Table("(? UNION ALL ? UNION ALL ? UNION ALL ?) entries", opening, ledger, payments, receipts).Order("at,kind,ref_id").Scan(&entries).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-
-	c.JSON(200, gin.H{
-		"client": gin.H{
-			"id":            clientID,
-			"name":          clientName,
-			"balance_minor": balanceMinor,
-		},
-		"entries": entries,
-	})
+	if err := tx.Commit().Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	var running int64
+	for i := range entries {
+		running += entries[i].DeltaMinor
+		entries[i].RunningBalance = running
+	}
+	c.JSON(200, gin.H{"client": gin.H{"id": clientID, "name": client.Name, "balance_minor": client.BalanceMinor}, "entries": entries})
 }

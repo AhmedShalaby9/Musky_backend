@@ -2,6 +2,8 @@ package server
 
 import (
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"musky/backend/internal/model"
 	"strings"
 )
@@ -41,60 +43,32 @@ func (a *API) createTenant(c *gin.Context) {
 		fail(c, 500, "internal server error")
 		return
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
+	var tenant tenantRecord
+	var trader userRecord
+	err = a.orm.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		tenant = tenantRecord{Name: in.Name, Active: true}
+		if err := tx.Create(&tenant).Error; err != nil {
+			return err
+		}
+		trader = userRecord{TenantID: ptr(tenant.ID), Name: in.Trader.Name, Email: in.Trader.Email, PasswordHash: hash, Role: model.Trader, Active: true}
+		return tx.Create(&trader).Error
+	})
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
-	defer tx.Rollback()
-	res, err := tx.ExecContext(c.Request.Context(), "INSERT INTO tenants(name) VALUES (?)", in.Name)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	res, err = tx.ExecContext(c.Request.Context(), "INSERT INTO users(tenant_id,name,email,password_hash,role) VALUES (?,?,?,?,'trader')", id, in.Trader.Name, in.Trader.Email, hash)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	userID, err := res.LastInsertId()
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	if err = tx.Commit(); err != nil {
-		databaseError(c, err)
-		return
-	}
-	c.JSON(201, gin.H{"id": id, "name": in.Name, "active": true, "trader_id": userID})
+	c.JSON(201, gin.H{"id": tenant.ID, "name": tenant.Name, "active": true, "trader_id": trader.ID})
 }
 func (a *API) listTenants(c *gin.Context) {
 	limit, offset, ok := pagination(c)
 	if !ok {
 		return
 	}
-	rows, err := a.db.QueryContext(c.Request.Context(), "SELECT id,name,active,logo_url,created_at FROM tenants ORDER BY id LIMIT ? OFFSET ?", limit, offset)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
-	data := []model.Tenant{}
-	for rows.Next() {
-		var t model.Tenant
-		if err = rows.Scan(&t.ID, &t.Name, &t.Active, &t.LogoURL, &t.CreatedAt); err != nil {
-			databaseError(c, err)
-			return
-		}
-		data = append(data, t)
-	}
-	if err = rows.Err(); err != nil {
-		databaseError(c, err)
+	var data []model.Tenant
+	result := a.orm.WithContext(c.Request.Context()).Table("tenants").Select("id,name,active,logo_url,created_at").
+		Order("id").Limit(limit).Offset(offset).Scan(&data)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
 	c.JSON(200, gin.H{"data": data, "limit": limit, "offset": offset})
@@ -122,36 +96,37 @@ func (a *API) updateTenant(c *gin.Context) {
 			return
 		}
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer tx.Rollback()
 	var t model.Tenant
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT id,name,active,logo_url,created_at FROM tenants WHERE id=? FOR UPDATE", id).Scan(&t.ID, &t.Name, &t.Active, &t.LogoURL, &t.CreatedAt); err != nil {
-		databaseError(c, err)
-		return
-	}
-	if in.Name != nil {
-		t.Name = *in.Name
-	}
-	if in.Active != nil {
-		t.Active = *in.Active
-	}
-	if _, err = tx.ExecContext(c.Request.Context(), "UPDATE tenants SET name=?,active=? WHERE id=?", t.Name, t.Active, id); err != nil {
-		databaseError(c, err)
-		return
-	}
-	if !t.Active {
-		if _, err = tx.ExecContext(c.Request.Context(), "DELETE s FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.tenant_id=?", id); err != nil {
-			databaseError(c, err)
-			return
+	err := a.orm.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", id).First(&t)
+		if result.Error != nil {
+			return result.Error
 		}
-	}
-	if err = tx.Commit(); err != nil {
+		if in.Name != nil {
+			t.Name = *in.Name
+		}
+		if in.Active != nil {
+			t.Active = *in.Active
+		}
+		if err := tx.Model(&tenantRecord{}).Where("id = ?", id).Updates(map[string]any{"name": t.Name, "active": t.Active}).Error; err != nil {
+			return err
+		}
+		if !t.Active {
+			return tx.Where("user_id IN (?)", tx.Model(&userRecord{}).Select("id").Where("tenant_id = ?", id)).Delete(&sessionRecord{}).Error
+		}
+		return nil
+	})
+	if err != nil {
 		databaseError(c, err)
 		return
 	}
 	c.JSON(200, t)
 }
+
+type tenantRecord struct {
+	ID     uint64 `gorm:"primaryKey"`
+	Name   string
+	Active bool
+}
+
+func (tenantRecord) TableName() string { return "tenants" }

@@ -2,41 +2,46 @@ package server
 
 import (
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"musky/backend/internal/model"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // clientStoredCols selects the persisted columns only (no alias required).
 const clientStoredCols = "id,tenant_id,user_id,name,phone,address,active,opening_balance_minor,created_at"
 
-// clientDisplayCols selects all persisted columns (aliased to c.) plus computed
-// balance_minor and last_payment_at.
-const clientDisplayCols = "c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at," +
-	"(c.opening_balance_minor" +
-	"+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)" +
-	"-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0)" +
-	"-COALESCE((SELECT SUM(IF(r.reversal_of_id IS NULL,r.amount_minor,-r.amount_minor)) FROM client_receipts r WHERE r.tenant_id=c.tenant_id AND r.client_id=c.id),0)" +
-	") AS balance_minor," +
-	"(SELECT MAX(t) FROM (" +
-	"SELECT MAX(p2.paid_at) AS t FROM invoice_payments p2 WHERE p2.tenant_id=c.tenant_id AND p2.client_id=c.id" +
-	" UNION ALL " +
-	"SELECT MAX(r2.received_at) FROM client_receipts r2 WHERE r2.tenant_id=c.tenant_id AND r2.client_id=c.id AND r2.reversal_of_id IS NULL" +
-	") _lp) AS last_payment_at"
-
-// scanClientStored reads the 9 persisted columns. Used inside transactions where
-// the full balance expression is not needed (e.g. FOR UPDATE row lock).
-func scanClientStored(row scanner) (model.Client, error) {
-	var v model.Client
-	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt)
-	return v, err
+type clientRecord struct {
+	ID                  uint64
+	TenantID            uint64
+	UserID              uint64
+	Name                string
+	Phone               *string
+	Address             string
+	Active              bool
+	OpeningBalanceMinor int64
+	CreatedAt           time.Time
 }
 
-// scanClient reads 11 columns: the 9 persisted plus balance_minor and last_payment_at.
-func scanClient(row scanner) (model.Client, error) {
-	var v model.Client
-	err := row.Scan(&v.ID, &v.TenantID, &v.UserID, &v.Name, &v.Phone, &v.Address, &v.Active, &v.OpeningBalanceMinor, &v.CreatedAt, &v.BalanceMinor, &v.LastPaymentAt)
-	return v, err
+func (clientRecord) TableName() string { return "clients" }
+
+func clientFromRecord(v clientRecord) model.Client {
+	return model.Client{ID: v.ID, TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor, CreatedAt: v.CreatedAt}
+}
+
+// Aggregate once per tenant and share the balance formula across all endpoints.
+func clientDisplayQuery(db *gorm.DB, tenant uint64) *gorm.DB {
+	ledger := db.Model(&clientLedgerRecord{}).Select("client_id, SUM(amount_minor) AS amount").Where("tenant_id = ?", tenant).Group("client_id")
+	payments := db.Model(&paymentRecord{}).Select("client_id, SUM(amount_minor) AS amount, MAX(paid_at) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
+	receipts := db.Model(&model.ClientReceipt{}).Select("client_id, SUM(IF(reversal_of_id IS NULL,amount_minor,-amount_minor)) AS amount, MAX(IF(reversal_of_id IS NULL,received_at,NULL)) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
+	return db.Table("clients c").Select("c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at,"+
+		"(c.opening_balance_minor + COALESCE(l.amount,0) - COALESCE(p.amount,0) - COALESCE(r.amount,0)) AS balance_minor,"+
+		"CASE WHEN p.last_at IS NULL THEN r.last_at WHEN r.last_at IS NULL THEN p.last_at ELSE GREATEST(p.last_at,r.last_at) END AS last_payment_at").
+		Joins("LEFT JOIN (?) l ON l.client_id = c.id", ledger).
+		Joins("LEFT JOIN (?) p ON p.client_id = c.id", payments).
+		Joins("LEFT JOIN (?) r ON r.client_id = c.id", receipts).Where("c.tenant_id = ?", tenant)
 }
 
 type clientInput struct {
@@ -94,14 +99,12 @@ func (a *API) listClients(c *gin.Context) {
 	if !ok {
 		return
 	}
-	query := "SELECT " + clientDisplayCols + " FROM clients c WHERE c.tenant_id=?"
-	args := []any{tenantID(c)}
+	query := clientDisplayQuery(a.orm.WithContext(c.Request.Context()), tenantID(c))
 	if c.Query("active") == "true" {
-		query += " AND c.active=TRUE"
+		query = query.Where("c.active = TRUE")
 	}
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
-		query += " AND (c.name LIKE ? OR c.phone LIKE ?)"
-		args = append(args, "%"+q+"%", "%"+q+"%")
+		query = query.Where("(c.name LIKE ? OR c.phone LIKE ?)", "%"+q+"%", "%"+q+"%")
 	}
 	if d := c.Query("days_without_payment"); d != "" {
 		days, err := strconv.Atoi(d)
@@ -109,28 +112,12 @@ func (a *API) listClients(c *gin.Context) {
 			fail(c, 400, "days_without_payment must be a positive integer")
 			return
 		}
-		query += " HAVING last_payment_at IS NULL OR last_payment_at < UTC_TIMESTAMP() - INTERVAL ? DAY"
-		args = append(args, days)
+		query = query.Having("last_payment_at IS NULL OR last_payment_at < UTC_TIMESTAMP() - INTERVAL ? DAY", days)
 	}
-	query += " ORDER BY c.id LIMIT ? OFFSET ?"
-	args = append(args, limit, offset)
-	rows, err := a.db.QueryContext(c.Request.Context(), query, args...)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
 	data := []model.Client{}
-	for rows.Next() {
-		v, err := scanClient(rows)
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		data = append(data, v)
-	}
-	if err = rows.Err(); err != nil {
-		databaseError(c, err)
+	result := query.Order("c.id").Limit(limit).Offset(offset).Scan(&data)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
 	c.JSON(200, gin.H{"data": data, "limit": limit, "offset": offset})
@@ -141,11 +128,15 @@ func (a *API) getClient(c *gin.Context) {
 	if !ok {
 		return
 	}
-	v, err := scanClient(a.db.QueryRowContext(c.Request.Context(),
-		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
-		tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
+	var v model.Client
+	result := clientDisplayQuery(a.orm.WithContext(c.Request.Context()), tenantID(c)).
+		Where("c.tenant_id = ? AND c.id = ?", tenantID(c), id).Limit(1).Scan(&v)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
 		return
 	}
 	c.JSON(200, v)
@@ -158,12 +149,14 @@ func (a *API) deleteClient(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := a.db.ExecContext(c.Request.Context(), "UPDATE clients SET active=FALSE WHERE tenant_id=? AND id=?", tenantID(c), id)
-	if err != nil {
-		databaseError(c, err)
+	result := a.orm.WithContext(c.Request.Context()).Model(&clientRecord{}).
+		Where("tenant_id = ? AND id = ?", tenantID(c), id).
+		Update("active", false)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if result.RowsAffected == 0 {
 		fail(c, 404, "not found")
 		return
 	}
@@ -193,9 +186,8 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 			return
 		}
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
+	tx, ok := a.commerceTx(c)
+	if !ok {
 		return
 	}
 	defer tx.Rollback()
@@ -204,13 +196,14 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 			v.UserID = u.ID
 		}
 	} else {
-		v, err = scanClientStored(tx.QueryRowContext(c.Request.Context(),
-			"SELECT "+clientStoredCols+" FROM clients WHERE tenant_id=? AND id=? FOR UPDATE",
-			tenantID(c), id))
-		if err != nil {
-			databaseError(c, err)
+		var record clientRecord
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("tenant_id = ? AND id = ?", tenantID(c), id).First(&record)
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
+		v = clientFromRecord(record)
 	}
 	in.apply(&v)
 	if v.UserID == 0 {
@@ -218,50 +211,50 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		return
 	}
 	if create || in.UserID != nil {
-		var owner uint64
-		if err = tx.QueryRowContext(c.Request.Context(),
-			"SELECT id FROM users WHERE tenant_id=? AND id=? AND active=TRUE FOR SHARE",
-			tenantID(c), v.UserID).Scan(&owner); err != nil {
-			databaseError(c, err)
+		var owner model.User
+		result := tx.Clauses(clause.Locking{Strength: "SHARE"}).
+			Select("id").Where("tenant_id = ? AND id = ? AND active = TRUE", tenantID(c), v.UserID).First(&owner)
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(),
-			"INSERT INTO clients(tenant_id,user_id,name,phone,address,active,opening_balance_minor) VALUES (?,?,?,?,?,?,?)",
-			v.TenantID, v.UserID, v.Name, v.Phone, v.Address, v.Active, v.OpeningBalanceMinor)
-		if err != nil {
-			databaseError(c, err)
+		record := clientRecord{TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor}
+		result := tx.Create(&record)
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
-		inserted, err := result.LastInsertId()
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		id = uint64(inserted)
+		id = record.ID
 	} else {
-		if _, err = tx.ExecContext(c.Request.Context(),
-			"UPDATE clients SET user_id=?,name=?,phone=?,address=?,active=?,opening_balance_minor=? WHERE tenant_id=? AND id=?",
-			v.UserID, v.Name, v.Phone, v.Address, v.Active, v.OpeningBalanceMinor, tenantID(c), id); err != nil {
-			databaseError(c, err)
+		result := tx.Model(&clientRecord{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{
+			"user_id": v.UserID, "name": v.Name, "phone": v.Phone, "address": v.Address,
+			"active": v.Active, "opening_balance_minor": v.OpeningBalanceMinor,
+		})
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
 	}
-	v, err = scanClient(tx.QueryRowContext(c.Request.Context(),
-		"SELECT "+clientDisplayCols+" FROM clients c WHERE c.tenant_id=? AND c.id=?",
-		tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
+	var display model.Client
+	result := clientDisplayQuery(tx, tenantID(c)).
+		Where("c.tenant_id = ? AND c.id = ?", tenantID(c), id).Limit(1).Scan(&display)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
 	if create {
-		c.JSON(201, v)
+		c.JSON(201, display)
 	} else {
-		c.JSON(200, v)
+		c.JSON(200, display)
 	}
 }

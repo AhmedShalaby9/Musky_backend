@@ -2,64 +2,39 @@ package server
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"musky/backend/internal/model"
 	"strconv"
 	"strings"
 	"time"
 )
 
-const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d'),client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at,COALESCE(pdf_url,'')"
+const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d') AS issue_date,client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at,COALESCE(pdf_url,'') AS pdf_url"
 const maxPrice int64 = 1000000000000
 
-func scanInvoice(row scanner) (model.Invoice, error) {
-	var v model.Invoice
-	err := row.Scan(&v.ID, &v.TenantID, &v.ClientID, &v.CreatedByUserID, &v.Number, &v.Status, &v.Currency, &v.IssueDate, &v.ClientName, &v.ClientAddress, &v.Notes, &v.VoidReason, &v.TotalMinor, &v.Version, &v.CreatedAt, &v.PostedAt, &v.VoidedAt, &v.PdfURL)
-	return v, err
-}
-func readInvoice(ctx context.Context, tx *sql.Tx, tenant, id uint64, lock bool) (model.Invoice, error) {
-	query := "SELECT " + invoiceColumns + " FROM invoices WHERE tenant_id=? AND id=?"
+func readInvoice(ctx context.Context, tx *gorm.DB, tenant, id uint64, lock bool) (model.Invoice, error) {
+	tx = tx.WithContext(ctx)
+	query := tx.Model(&model.Invoice{}).Select(invoiceColumns).Where("tenant_id = ? AND id = ?", tenant, id)
 	if lock {
-		query += " FOR UPDATE"
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
 	}
-	v, err := scanInvoice(tx.QueryRowContext(ctx, query, tenant, id))
-	if err != nil {
+	var v model.Invoice
+	if err := query.Take(&v).Error; err != nil {
 		return v, err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT product_id,title,code,pieces_per_unit,quantity,units_per_package,package_count,unit_price_minor,total_minor FROM invoice_items WHERE tenant_id=? AND invoice_id=? ORDER BY id", tenant, id)
-	if err != nil {
-		return v, err
-	}
-	defer rows.Close()
 	v.Items = []model.InvoiceItem{}
-	for rows.Next() {
-		var item model.InvoiceItem
-		if err = rows.Scan(&item.ProductID, &item.Title, &item.Code, &item.PiecesPerUnit, &item.Quantity, &item.UnitsPerPackage, &item.PackageCount, &item.UnitPriceMinor, &item.TotalMinor); err != nil {
-			return v, err
-		}
-		v.Items = append(v.Items, item)
-	}
-	if err = rows.Err(); err != nil {
+	if err := tx.Model(&invoiceItemRecord{}).Where("tenant_id = ? AND invoice_id = ?", tenant, id).Order("id").Scan(&v.Items).Error; err != nil {
 		return v, err
 	}
 	v.Payments = []model.Payment{}
-	rows, err = tx.QueryContext(ctx, "SELECT id,amount_minor,method,notes,paid_at FROM invoice_payments WHERE tenant_id=? AND invoice_id=? ORDER BY paid_at,id", tenant, id)
-	if err != nil {
+	if err := tx.Model(&paymentRecord{}).Where("tenant_id = ? AND invoice_id = ?", tenant, id).Order("paid_at,id").Scan(&v.Payments).Error; err != nil {
 		return v, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var payment model.Payment
-		if err = rows.Scan(&payment.ID, &payment.AmountMinor, &payment.Method, &payment.Notes, &payment.PaidAt); err != nil {
-			return v, err
-		}
+	for _, payment := range v.Payments {
 		v.PaidMinor += payment.AmountMinor
-		v.Payments = append(v.Payments, payment)
-	}
-	if err = rows.Err(); err != nil {
-		return v, err
 	}
 	v.RemainingMinor = v.TotalMinor - v.PaidMinor
 	v.PaymentStatus = "unpaid"
@@ -76,34 +51,17 @@ func (a *API) listInvoices(c *gin.Context) {
 	if !ok {
 		return
 	}
-	query := "SELECT " + invoiceColumns + " FROM invoices WHERE tenant_id=?"
-	args := []any{tenantID(c)}
+	query := a.orm.WithContext(c.Request.Context()).Model(&model.Invoice{}).Select(invoiceColumns).Where("tenant_id = ?", tenantID(c))
 	if status := c.Query("status"); status != "" {
 		if status != "draft" && status != "posted" && status != "void" && status != "cancelled" {
 			fail(c, 400, "invalid invoice status")
 			return
 		}
-		query += " AND status=?"
-		args = append(args, status)
+		query = query.Where("status = ?", status)
 	}
-	query += " ORDER BY id DESC LIMIT ? OFFSET ?"
-	args = append(args, limit, offset)
-	rows, err := a.db.QueryContext(c.Request.Context(), query, args...)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
+
 	data := []model.Invoice{}
-	for rows.Next() {
-		v, err := scanInvoice(rows)
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		data = append(data, v)
-	}
-	if err = rows.Err(); err != nil {
+	if err := query.Order("id DESC").Limit(limit).Offset(offset).Find(&data).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -114,9 +72,9 @@ func (a *API) getInvoice(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		databaseError(c, err)
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		databaseError(c, tx.Error)
 		return
 	}
 	defer tx.Rollback()
@@ -125,7 +83,7 @@ func (a *API) getInvoice(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -202,10 +160,16 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 	}
 	var name, address string
 	var active bool
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT name,address,active FROM clients WHERE tenant_id=? AND id=? FOR SHARE", tenantID(c), in.ClientID).Scan(&name, &address, &active); err != nil {
+	var client struct {
+		Name    string
+		Address string
+		Active  bool
+	}
+	if err = tx.Model(&clientRecord{}).Select("name,address,active").Clauses(clause.Locking{Strength: "SHARE"}).Where("tenant_id = ? AND id = ?", tenantID(c), in.ClientID).Take(&client).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
+	name, address, active = client.Name, client.Address, client.Active
 	if !active {
 		fail(c, 409, "cannot invoice an archived client")
 		return
@@ -219,8 +183,12 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 			return
 		}
 		seen[line.ProductID] = true
-		p, err := scanProduct(tx.QueryRowContext(c.Request.Context(), "SELECT "+productColumns+" FROM products WHERE tenant_id=? AND id=? FOR SHARE", tenantID(c), line.ProductID))
-		if err != nil {
+		var p model.Product
+		result := tx.Select(productColumns).Clauses(clause.Locking{Strength: "SHARE"}).Where("tenant_id = ? AND id = ?", tenantID(c), line.ProductID).Take(&p)
+		if err := result.Error; err != nil || result.RowsAffected == 0 {
+			if err == nil {
+				err = gorm.ErrRecordNotFound
+			}
 			databaseError(c, err)
 			return
 		}
@@ -249,32 +217,28 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 			return
 		}
 		total += amount
-		items = append(items, model.InvoiceItem{ProductID: p.ID, Title: p.Title, Code: p.Code, PiecesPerUnit: unitsPerPackage, Quantity: packageCount, UnitsPerPackage: unitsPerPackage, PackageCount: packageCount, UnitPriceMinor: price, TotalMinor: amount})
+		items = append(items, model.InvoiceItem{ProductID: p.ID, Title: p.Title, Code: p.Code, PiecesPerUnit: p.PiecesPerUnit, Quantity: packageCount, UnitsPerPackage: unitsPerPackage, PackageCount: packageCount, UnitPriceMinor: price, TotalMinor: amount})
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO invoices(tenant_id,client_id,created_by_user_id,issue_date,client_name,client_address,notes,total_minor) VALUES (?,?,?,?,?,?,?,?)", tenantID(c), in.ClientID, actor(c).ID, in.IssueDate, name, address, in.Notes, total)
-		if err != nil {
-			databaseError(c, err)
+		row := model.Invoice{TenantID: tenantID(c), ClientID: in.ClientID, CreatedByUserID: actor(c).ID, IssueDate: in.IssueDate, ClientName: name, ClientAddress: address, Notes: in.Notes, TotalMinor: total, Status: "draft", Currency: "EGP", Version: 1}
+		rowTable := tx.Create(&row)
+		if rowTable.Error != nil {
+			databaseError(c, rowTable.Error)
 			return
 		}
-		inserted, err := result.LastInsertId()
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		id = uint64(inserted)
+		id = row.ID
 	} else {
-		if _, err = tx.ExecContext(c.Request.Context(), "UPDATE invoices SET client_id=?,issue_date=?,client_name=?,client_address=?,notes=?,total_minor=?,version=version+1 WHERE tenant_id=? AND id=?", in.ClientID, in.IssueDate, name, address, in.Notes, total, tenantID(c), id); err != nil {
+		if err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"client_id": in.ClientID, "issue_date": in.IssueDate, "client_name": name, "client_address": address, "notes": in.Notes, "total_minor": total, "version": gorm.Expr("version + 1")}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
-		if _, err = tx.ExecContext(c.Request.Context(), "DELETE FROM invoice_items WHERE tenant_id=? AND invoice_id=?", tenantID(c), id); err != nil {
+		if err = tx.Where("tenant_id = ? AND invoice_id = ?", tenantID(c), id).Delete(&invoiceItemRecord{}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
 	}
 	for _, item := range items {
-		if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO invoice_items(tenant_id,invoice_id,product_id,title,code,pieces_per_unit,quantity,units_per_package,package_count,unit_price_minor,total_minor) VALUES (?,?,?,?,?,?,?,?,?,?,?)", tenantID(c), id, item.ProductID, item.Title, item.Code, item.PiecesPerUnit, item.Quantity, item.UnitsPerPackage, item.PackageCount, item.UnitPriceMinor, item.TotalMinor); err != nil {
+		if err = tx.Create(&invoiceItemRecord{TenantID: tenantID(c), InvoiceID: id, InvoiceItem: item}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
@@ -284,7 +248,7 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -340,10 +304,12 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 	}
 	if target == "posted" {
 		var active bool
-		if err = tx.QueryRowContext(c.Request.Context(), "SELECT active FROM clients WHERE tenant_id=? AND id=? FOR SHARE", tenantID(c), v.ClientID).Scan(&active); err != nil {
+		var client struct{ Active bool }
+		if err = tx.Model(&clientRecord{}).Select("active").Clauses(clause.Locking{Strength: "SHARE"}).Where("tenant_id = ? AND id = ?", tenantID(c), v.ClientID).Take(&client).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
+		active = client.Active
 		if !active {
 			fail(c, 409, "cannot post for an archived client")
 			return
@@ -351,8 +317,12 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 	}
 	if target != "cancelled" {
 		for _, item := range v.Items {
-			p, err := scanProduct(tx.QueryRowContext(c.Request.Context(), "SELECT "+productColumns+" FROM products WHERE tenant_id=? AND id=? FOR UPDATE", tenantID(c), item.ProductID))
-			if err != nil {
+			var p model.Product
+			result := tx.Select(productColumns).Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ? AND id = ?", tenantID(c), item.ProductID).Take(&p)
+			if err := result.Error; err != nil || result.RowsAffected == 0 {
+				if err == nil {
+					err = gorm.ErrRecordNotFound
+				}
 				databaseError(c, err)
 				return
 			}
@@ -373,11 +343,11 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 				fail(c, 409, "stock limit would be exceeded by reversal")
 				return
 			}
-			if _, err = tx.ExecContext(c.Request.Context(), "UPDATE products SET quantity=quantity+?,version=version+1 WHERE tenant_id=? AND id=?", delta, tenantID(c), p.ID); err != nil {
+			if err = tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenantID(c), p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", delta), "version": gorm.Expr("version + 1")}).Error; err != nil {
 				databaseError(c, err)
 				return
 			}
-			if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO stock_movements(tenant_id,product_id,invoice_id,created_by_user_id,kind,quantity_delta) VALUES (?,?,?,?,?,?)", tenantID(c), p.ID, id, actor(c).ID, kind, delta); err != nil {
+			if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, CreatedByUserID: actor(c).ID, Kind: kind, QuantityDelta: delta}).Error; err != nil {
 				databaseError(c, err)
 				return
 			}
@@ -388,31 +358,33 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 			amount = -amount
 			kind = "void"
 		}
-		if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO client_ledger(tenant_id,client_id,invoice_id,kind,amount_minor) VALUES (?,?,?,?,?)", tenantID(c), v.ClientID, id, kind, amount); err != nil {
+		if err = tx.Create(&clientLedgerRecord{TenantID: tenantID(c), ClientID: v.ClientID, InvoiceID: id, Kind: kind, AmountMinor: amount}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
 	}
 	switch target {
 	case "posted":
-		if _, err = tx.ExecContext(c.Request.Context(), "INSERT IGNORE INTO invoice_counters(tenant_id) VALUES (?)", tenantID(c)); err != nil {
+		if err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&invoiceCounterRecord{TenantID: tenantID(c), NextNumber: 1}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
 		var number int64
-		if err = tx.QueryRowContext(c.Request.Context(), "SELECT next_number FROM invoice_counters WHERE tenant_id=? FOR UPDATE", tenantID(c)).Scan(&number); err != nil {
+		var counter struct{ NextNumber int64 }
+		if err = tx.Model(&invoiceCounterRecord{}).Select("next_number").Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ?", tenantID(c)).Take(&counter).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
-		if _, err = tx.ExecContext(c.Request.Context(), "UPDATE invoice_counters SET next_number=next_number+1 WHERE tenant_id=?", tenantID(c)); err != nil {
+		number = counter.NextNumber
+		if err = tx.Model(&invoiceCounterRecord{}).Where("tenant_id = ?", tenantID(c)).Update("next_number", gorm.Expr("next_number + 1")).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE invoices SET status='posted',number=?,posted_at=UTC_TIMESTAMP(6),version=version+1 WHERE tenant_id=? AND id=?", number, tenantID(c), id)
+		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"status": "posted", "number": number, "posted_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version + 1")}).Error
 	case "void":
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE invoices SET status='void',void_reason=?,voided_at=UTC_TIMESTAMP(6),version=version+1 WHERE tenant_id=? AND id=?", in.Reason, tenantID(c), id)
+		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"status": "void", "void_reason": in.Reason, "voided_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version + 1")}).Error
 	default:
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE invoices SET status='cancelled',version=version+1 WHERE tenant_id=? AND id=?", tenantID(c), id)
+		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"status": "cancelled", "version": gorm.Expr("version + 1")}).Error
 	}
 	if err != nil {
 		databaseError(c, err)
@@ -423,7 +395,7 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -431,12 +403,20 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 }
 func (a *API) financialSummary(c *gin.Context) {
 	var receivables, payables, net int64
-	err := a.db.QueryRowContext(c.Request.Context(), `SELECT COALESCE(SUM(GREATEST(balance,0)),0),COALESCE(SUM(GREATEST(-balance,0)),0),COALESCE(SUM(balance),0)
- FROM (SELECT c.opening_balance_minor+COALESCE((SELECT SUM(l.amount_minor) FROM client_ledger l WHERE l.tenant_id=c.tenant_id AND l.client_id=c.id),0)-COALESCE((SELECT SUM(p.amount_minor) FROM invoice_payments p WHERE p.tenant_id=c.tenant_id AND p.client_id=c.id),0) AS balance FROM clients c WHERE c.tenant_id=?) balances`, tenantID(c)).Scan(&receivables, &payables, &net)
+	var summary struct {
+		Receivables int64
+		Payables    int64
+		Net         int64
+	}
+	db := a.orm.WithContext(c.Request.Context())
+	balances := clientDisplayQuery(db, tenantID(c))
+	err := db.Table("(?) balances", balances).
+		Select("COALESCE(SUM(GREATEST(balance_minor,0)),0) AS receivables,COALESCE(SUM(GREATEST(-balance_minor,0)),0) AS payables,COALESCE(SUM(balance_minor),0) AS net").Scan(&summary).Error
 	if err != nil {
 		databaseError(c, err)
 		return
 	}
+	receivables, payables, net = summary.Receivables, summary.Payables, summary.Net
 	c.JSON(200, gin.H{"currency": "EGP", "receivables_minor": receivables, "payables_minor": payables, "net_minor": net, "scope": "posted_invoices_and_voids"})
 }
 
@@ -469,33 +449,38 @@ func (a *API) createPayment(c *gin.Context) {
 	var clientID uint64
 	var status string
 	var total, paid int64
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT client_id,status,total_minor FROM invoices WHERE tenant_id=? AND id=? FOR UPDATE", tenantID(c), id).Scan(&clientID, &status, &total); err != nil {
+	var invoiceRow struct {
+		ClientID   uint64
+		Status     string
+		TotalMinor int64
+	}
+	if err := tx.Model(&model.Invoice{}).Select("client_id,status,total_minor").Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Take(&invoiceRow).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
+	clientID, status, total = invoiceRow.ClientID, invoiceRow.Status, invoiceRow.TotalMinor
 	if status != "posted" {
 		fail(c, 409, "payments can only be recorded for posted invoices")
 		return
 	}
-	if err := tx.QueryRowContext(c.Request.Context(), "SELECT COALESCE(SUM(amount_minor),0) FROM invoice_payments WHERE tenant_id=? AND invoice_id=?", tenantID(c), id).Scan(&paid); err != nil {
+	var paidRow struct{ Paid int64 }
+	if err := tx.Model(&paymentRecord{}).Select("COALESCE(SUM(amount_minor),0) AS paid").Where("tenant_id = ? AND invoice_id = ?", tenantID(c), id).Scan(&paidRow).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
+	paid = paidRow.Paid
 	if paid > total-in.AmountMinor {
 		fail(c, 409, "payment exceeds the invoice remaining balance")
 		return
 	}
-	res, err := tx.ExecContext(c.Request.Context(), "INSERT INTO invoice_payments(tenant_id,invoice_id,client_id,received_by_user_id,amount_minor,method,notes) VALUES (?,?,?,?,?,?,?)", tenantID(c), id, clientID, actor(c).ID, in.AmountMinor, in.Method, in.Notes)
-	if err != nil {
+	row := paymentRecord{TenantID: tenantID(c), InvoiceID: id, ClientID: clientID, ReceivedByUserID: actor(c).ID, Payment: model.Payment{AmountMinor: in.AmountMinor, Method: in.Method, Notes: in.Notes}}
+
+	if err := tx.Omit("paid_at").Create(&row).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	paymentID, err := res.LastInsertId()
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	if err = tx.Commit(); err != nil {
+	paymentID := row.ID
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}

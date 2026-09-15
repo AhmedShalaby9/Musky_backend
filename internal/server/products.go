@@ -1,8 +1,9 @@
 package server
 
 import (
-	"database/sql"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"musky/backend/internal/model"
 	"strings"
 )
@@ -11,27 +12,27 @@ const maxQuantity int64 = 1000000000
 const maxTotal int64 = 100000000000000
 const productColumns = "id,tenant_id,title,code,quantity,pieces_per_unit,active,version,created_at"
 
-func scanProduct(row scanner) (model.Product, error) {
-	var p model.Product
-	err := row.Scan(&p.ID, &p.TenantID, &p.Title, &p.Code, &p.Quantity, &p.PiecesPerUnit, &p.Active, &p.Version, &p.CreatedAt)
-	return p, err
-}
-
 // All commerce mutations acquire the tenant row first. This serializes stock
 // corrections, invoice posting and numbering within a tenant, not across tenants.
-func (a *API) commerceTx(c *gin.Context) (*sql.Tx, bool) {
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
+func (a *API) commerceTx(c *gin.Context) (*gorm.DB, bool) {
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		databaseError(c, tx.Error)
 		return nil, false
 	}
-	var active bool
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT active FROM tenants WHERE id=? FOR UPDATE", tenantID(c)).Scan(&active); err != nil {
+	var tenant struct{ Active bool }
+	result := tx.Table("tenants").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", tenantID(c)).Select("active").Scan(&tenant)
+	if result.Error != nil {
 		tx.Rollback()
-		databaseError(c, err)
+		databaseError(c, result.Error)
 		return nil, false
 	}
-	if !active {
+	if result.RowsAffected == 0 {
+		tx.Rollback()
+		fail(c, 404, "not found")
+		return nil, false
+	}
+	if !tenant.Active {
 		tx.Rollback()
 		fail(c, 403, "tenant is inactive")
 		return nil, false
@@ -43,34 +44,17 @@ func (a *API) listProducts(c *gin.Context) {
 	if !ok {
 		return
 	}
-	query := "SELECT " + productColumns + " FROM products WHERE tenant_id=?"
-	args := []any{tenantID(c)}
+	query := a.orm.WithContext(c.Request.Context()).Table("products").Select(productColumns).Where("tenant_id = ?", tenantID(c))
 	if c.Query("active") == "true" {
-		query += " AND active=TRUE"
+		query = query.Where("active = TRUE")
 	}
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
-		query += " AND (title LIKE ? OR code LIKE ?)"
-		args = append(args, "%"+q+"%", "%"+q+"%")
+		query = query.Where("(title LIKE ? OR code LIKE ?)", "%"+q+"%", "%"+q+"%")
 	}
-	query += " ORDER BY id LIMIT ? OFFSET ?"
-	args = append(args, limit, offset)
-	rows, err := a.db.QueryContext(c.Request.Context(), query, args...)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	defer rows.Close()
-	data := []model.Product{}
-	for rows.Next() {
-		p, err := scanProduct(rows)
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		data = append(data, p)
-	}
-	if err = rows.Err(); err != nil {
-		databaseError(c, err)
+	var data []model.Product
+	result := query.Order("id").Limit(limit).Offset(offset).Scan(&data)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
 	c.JSON(200, gin.H{"data": data, "limit": limit, "offset": offset})
@@ -80,9 +64,15 @@ func (a *API) getProduct(c *gin.Context) {
 	if !ok {
 		return
 	}
-	p, err := scanProduct(a.db.QueryRowContext(c.Request.Context(), "SELECT "+productColumns+" FROM products WHERE tenant_id=? AND id=?", tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
+	var p model.Product
+	result := a.orm.WithContext(c.Request.Context()).Table("products").Select(productColumns).
+		Where("tenant_id = ? AND id = ?", tenantID(c), id).Limit(1).Scan(&p)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
 		return
 	}
 	c.JSON(200, p)
@@ -109,21 +99,20 @@ func (a *API) deleteProduct(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback()
-	_, err := tx.ExecContext(c.Request.Context(), "DELETE FROM stock_movements WHERE tenant_id=? AND product_id=?", tenantID(c), id)
-	if err != nil {
+	if err := tx.Where("tenant_id = ? AND product_id = ?", tenantID(c), id).Delete(&stockMovementRecord{}).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	res, err := tx.ExecContext(c.Request.Context(), "DELETE FROM products WHERE tenant_id=? AND id=?", tenantID(c), id)
-	if err != nil {
-		databaseError(c, err)
+	res := tx.Table("products").Where("tenant_id = ? AND id = ?", tenantID(c), id).Delete(&model.Product{})
+	if res.Error != nil {
+		databaseError(c, res.Error)
 		return
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if res.RowsAffected == 0 {
 		fail(c, 404, "not found")
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -160,11 +149,14 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 	}
 	defer tx.Rollback()
 	p := model.Product{TenantID: tenantID(c), Active: true, Version: 1}
-	var err error
 	if !create {
-		p, err = scanProduct(tx.QueryRowContext(c.Request.Context(), "SELECT "+productColumns+" FROM products WHERE tenant_id=? AND id=? FOR UPDATE", tenantID(c), id))
-		if err != nil {
-			databaseError(c, err)
+		result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Table("products").Select(productColumns).Where("tenant_id = ? AND id = ?", tenantID(c), id).Scan(&p)
+		if result.Error != nil {
+			databaseError(c, result.Error)
+			return
+		}
+		if result.RowsAffected == 0 {
+			fail(c, 404, "not found")
 			return
 		}
 		if p.Version != in.Version {
@@ -193,21 +185,16 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 		return
 	}
 	if create {
-		result, err := tx.ExecContext(c.Request.Context(), "INSERT INTO products(tenant_id,title,code,quantity,pieces_per_unit,active) VALUES (?,?,?,?,?,?)", p.TenantID, p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.Active)
-		if err != nil {
-			databaseError(c, err)
+		result := tx.Table("products").Create(&p)
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
-		inserted, err := result.LastInsertId()
-		if err != nil {
-			databaseError(c, err)
-			return
-		}
-		id = uint64(inserted)
+		id = p.ID
 	} else {
-		_, err = tx.ExecContext(c.Request.Context(), "UPDATE products SET title=?,code=?,quantity=?,pieces_per_unit=?,active=?,version=version+1 WHERE tenant_id=? AND id=?", p.Title, p.Code, p.Quantity, p.PiecesPerUnit, p.Active, tenantID(c), id)
-		if err != nil {
-			databaseError(c, err)
+		result := tx.Table("products").Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"title": p.Title, "code": p.Code, "quantity": p.Quantity, "pieces_per_unit": p.PiecesPerUnit, "active": p.Active, "version": gorm.Expr("version + 1")})
+		if result.Error != nil {
+			databaseError(c, result.Error)
 			return
 		}
 	}
@@ -216,17 +203,17 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 		if create {
 			kind = "opening"
 		}
-		if _, err = tx.ExecContext(c.Request.Context(), "INSERT INTO stock_movements(tenant_id,product_id,created_by_user_id,kind,quantity_delta) VALUES (?,?,?,?,?)", tenantID(c), id, actor(c).ID, kind, p.Quantity-oldQuantity); err != nil {
+		if err := tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: id, CreatedByUserID: actor(c).ID, Kind: kind, QuantityDelta: p.Quantity - oldQuantity}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
 	}
-	p, err = scanProduct(tx.QueryRowContext(c.Request.Context(), "SELECT "+productColumns+" FROM products WHERE tenant_id=? AND id=?", tenantID(c), id))
-	if err != nil {
-		databaseError(c, err)
+	result := tx.Table("products").Select(productColumns).Where("tenant_id = ? AND id = ?", tenantID(c), id).Scan(&p)
+	if result.Error != nil {
+		databaseError(c, result.Error)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}

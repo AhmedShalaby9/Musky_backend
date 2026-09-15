@@ -11,7 +11,7 @@ type ClientReceipt struct {
 	Method           string    `json:"method"`
 	Notes            string    `json:"notes"`
 	ReversalOfID     *uint64   `json:"reversal_of_id"`
-	ReceivedAt       time.Time `json:"received_at"`
+	ReceivedAt       time.Time `json:"received_at" gorm:"default:CURRENT_TIMESTAMP(6)"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -52,16 +52,16 @@ type Invoice struct {
 	Notes           string        `json:"notes"`
 	VoidReason      string        `json:"void_reason"`
 	TotalMinor      int64         `json:"total_minor"`
-	PaidMinor       int64         `json:"paid_minor"`
-	RemainingMinor  int64         `json:"remaining_minor"`
-	PaymentStatus   string        `json:"payment_status"`
+	PaidMinor       int64         `json:"paid_minor" gorm:"->;-:migration"`
+	RemainingMinor  int64         `json:"remaining_minor" gorm:"->;-:migration"`
+	PaymentStatus   string        `json:"payment_status" gorm:"->;-:migration"`
 	Version         int64         `json:"version"`
 	CreatedAt       time.Time     `json:"created_at"`
 	PostedAt        *time.Time    `json:"posted_at"`
 	VoidedAt        *time.Time    `json:"voided_at"`
 	PdfURL          string        `json:"pdf_url"`
-	Items           []InvoiceItem `json:"items,omitempty"`
-	Payments        []Payment     `json:"payments,omitempty"`
+	Items           []InvoiceItem `json:"items,omitempty" gorm:"-"`
+	Payments        []Payment     `json:"payments,omitempty" gorm:"-"`
 }
 type Payment struct {
 	ID          uint64    `json:"id"`

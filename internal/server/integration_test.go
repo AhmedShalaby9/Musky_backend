@@ -123,7 +123,8 @@ func TestMySQLTenantIsolation(t *testing.T) {
 	}
 	call("PATCH", clientPath, tr, `{"address":"123 Street"}`, 200)
 	call("DELETE", clientPath, tr, "", 204)
-	call("GET", clientPath, a, "", 404)
+	archived := call("GET", clientPath, a, "", 200)
+	if archived["active"] != false { t.Fatal("client was not archived", archived) }
 	call("DELETE", clientPath, a, "", 404)
 	call("GET", p1+"/clients?limit=0", a, "", 400)
 	call("GET", p1+"/users/abc", a, "", 400)

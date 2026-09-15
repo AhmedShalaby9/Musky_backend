@@ -5,10 +5,14 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"io"
+	"musky/backend/internal/model"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gvanbeck/nautilus/pdf/rtl"
@@ -27,9 +31,9 @@ func (a *API) invoicePDF(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tx, err := a.db.BeginTx(c.Request.Context(), nil)
-	if err != nil {
-		databaseError(c, err)
+	tx := a.orm.WithContext(c.Request.Context()).Begin()
+	if tx.Error != nil {
+		databaseError(c, tx.Error)
 		return
 	}
 	defer tx.Rollback()
@@ -38,12 +42,16 @@ func (a *API) invoicePDF(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	var tenantName, logoKey string
-	if err = tx.QueryRowContext(c.Request.Context(), "SELECT t.name,COALESCE(f.object_key,'') FROM tenants t LEFT JOIN file_objects f ON f.id=t.logo_file_id WHERE t.id=?", tenantID(c)).Scan(&tenantName, &logoKey); err != nil {
+	var logoKey string
+	var tenantRow struct {
+		ObjectKey string
+	}
+	if err = tx.Table("tenants t").Select("COALESCE(f.object_key,'') AS object_key").Joins("LEFT JOIN file_objects f ON f.id=t.logo_file_id AND f.tenant_id=t.id").Where("t.id = ?", tenantID(c)).Scan(&tenantRow).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	if err = tx.Commit(); err != nil {
+	logoKey = tenantRow.ObjectKey
+	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
 	}
@@ -143,12 +151,16 @@ func (a *API) invoicePDF(c *gin.Context) {
 		return
 	}
 	url := a.files.URL(key)
-	_, err = a.db.ExecContext(context.Background(), "INSERT INTO file_objects(tenant_id,uploaded_by_user_id,object_key,original_name,content_type,size_bytes,public_url) VALUES (?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE size_bytes=VALUES(size_bytes),public_url=VALUES(public_url)", tenantID(c), actor(c).ID, key, fmt.Sprintf("invoice-%d.pdf", id), "application/pdf", out.Len(), url)
-	if err != nil {
-		databaseError(c, err)
-		return
-	}
-	_, err = a.db.ExecContext(context.Background(), "UPDATE invoices SET pdf_url=? WHERE tenant_id=? AND id=?", url, tenantID(c), id)
+	// Finish the metadata transaction even if the download request is cancelled.
+	metadataCtx, cancelMetadata := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelMetadata()
+	err = a.orm.WithContext(metadataCtx).Transaction(func(tx *gorm.DB) error {
+		file := fileRecord{TenantID: tenantID(c), UploadedByUserID: actor(c).ID, ObjectKey: key, OriginalName: fmt.Sprintf("invoice-%d.pdf", id), ContentType: "application/pdf", SizeBytes: int64(out.Len()), PublicURL: url}
+		if err := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "object_key"}}, DoUpdates: clause.AssignmentColumns([]string{"size_bytes", "public_url"})}).Create(&file).Error; err != nil {
+			return err
+		}
+		return tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Update("pdf_url", url).Error
+	})
 	if err != nil {
 		databaseError(c, err)
 		return
