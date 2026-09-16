@@ -261,6 +261,57 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 func (a *API) postInvoice(c *gin.Context)   { a.transitionInvoice(c, "posted") }
 func (a *API) voidInvoice(c *gin.Context)   { a.transitionInvoice(c, "void") }
 func (a *API) cancelInvoice(c *gin.Context) { a.transitionInvoice(c, "cancelled") }
+func (a *API) reactivateInvoice(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	var invoice model.Invoice
+	if err := a.orm.WithContext(c.Request.Context()).Model(&model.Invoice{}).
+		Select("status").Where("tenant_id = ? AND id = ?", tenantID(c), id).Take(&invoice).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if invoice.Status == "void" {
+		a.transitionInvoice(c, "reactivated")
+		return
+	}
+	if invoice.Status != "cancelled" {
+		fail(c, 409, "only cancelled invoices can be reactivated")
+		return
+	}
+	version, err := strconv.ParseInt(c.Query("version"), 10, 64)
+	if err != nil || version <= 0 {
+		var in struct {
+			Version int64 `json:"version"`
+		}
+		if !decode(c, &in) {
+			return
+		}
+		version = in.Version
+	}
+	if version <= 0 {
+		fail(c, 400, "current version is required")
+		return
+	}
+	result := a.orm.WithContext(c.Request.Context()).Model(&model.Invoice{}).
+		Where("tenant_id = ? AND id = ? AND status = 'cancelled' AND version = ?", tenantID(c), id, version).
+		Updates(map[string]any{"status": "draft", "version": gorm.Expr("version + 1")})
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 409, "invoice changed; refresh before continuing")
+		return
+	}
+	v, err := readInvoice(c.Request.Context(), a.orm, tenantID(c), id, false)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.JSON(200, v)
+}
 func (a *API) transitionInvoice(c *gin.Context, target string) {
 	id, ok := pathID(c, "id")
 	if !ok {
@@ -298,11 +349,14 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 		fail(c, 409, "invoice changed; refresh before continuing")
 		return
 	}
-	if (target == "void" && v.Status != "posted") || (target != "void" && v.Status != "draft") {
+	reactivate := target == "reactivated"
+	if (target == "void" && v.Status != "posted") ||
+		(target == "reactivated" && v.Status != "void") ||
+		(target != "void" && target != "reactivated" && v.Status != "draft") {
 		fail(c, 409, "invoice cannot make this status transition")
 		return
 	}
-	if target == "posted" {
+	if target == "posted" || reactivate {
 		var active bool
 		var client struct{ Active bool }
 		if err = tx.Model(&clientRecord{}).Select("active").Clauses(clause.Locking{Strength: "SHARE"}).Where("tenant_id = ? AND id = ?", tenantID(c), v.ClientID).Take(&client).Error; err != nil {
@@ -328,7 +382,7 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 			}
 			delta := item.Quantity
 			kind := "void"
-			if target == "posted" {
+			if target == "posted" || reactivate {
 				if !p.Active || p.Quantity < item.Quantity {
 					fail(c, 409, fmt.Sprintf("insufficient stock or archived product: %s", item.Title))
 					return
@@ -364,23 +418,32 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 		}
 	}
 	switch target {
-	case "posted":
-		if err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&invoiceCounterRecord{TenantID: tenantID(c), NextNumber: 1}).Error; err != nil {
-			databaseError(c, err)
-			return
-		}
+	case "posted", "reactivated":
 		var number int64
-		var counter struct{ NextNumber int64 }
-		if err = tx.Model(&invoiceCounterRecord{}).Select("next_number").Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ?", tenantID(c)).Take(&counter).Error; err != nil {
-			databaseError(c, err)
-			return
+		if target == "posted" {
+			if err = tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&invoiceCounterRecord{TenantID: tenantID(c), NextNumber: 1}).Error; err != nil {
+				databaseError(c, err)
+				return
+			}
+			var counter struct{ NextNumber int64 }
+			if err = tx.Model(&invoiceCounterRecord{}).Select("next_number").Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ?", tenantID(c)).Take(&counter).Error; err != nil {
+				databaseError(c, err)
+				return
+			}
+			number = counter.NextNumber
+			if err = tx.Model(&invoiceCounterRecord{}).Where("tenant_id = ?", tenantID(c)).Update("next_number", gorm.Expr("next_number + 1")).Error; err != nil {
+				databaseError(c, err)
+				return
+			}
 		}
-		number = counter.NextNumber
-		if err = tx.Model(&invoiceCounterRecord{}).Where("tenant_id = ?", tenantID(c)).Update("next_number", gorm.Expr("next_number + 1")).Error; err != nil {
-			databaseError(c, err)
-			return
+		updates := map[string]any{"status": "posted", "posted_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version + 1")}
+		if target == "posted" {
+			updates["number"] = number
+		} else {
+			updates["void_reason"] = ""
+			updates["voided_at"] = nil
 		}
-		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"status": "posted", "number": number, "posted_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version + 1")}).Error
+		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(updates).Error
 	case "void":
 		err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"status": "void", "void_reason": in.Reason, "voided_at": gorm.Expr("UTC_TIMESTAMP(6)"), "version": gorm.Expr("version + 1")}).Error
 	default:

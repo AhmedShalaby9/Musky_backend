@@ -223,6 +223,13 @@ func TestMySQLCommerce(t *testing.T) {
 	if sum := call("GET", p+"/financial-summary", a, "", 200)["net_minor"]; sum != float64(212400) {
 		t.Fatal("void did not reverse debt", sum)
 	}
+	reactivated := call("POST", invoicePath+"/reactivate", a, `{"version":3}`, 200)
+	if reactivated["status"] != "posted" || reactivated["number"] != float64(1) {
+		t.Fatal("reactivation did not restore the original invoice", reactivated)
+	}
+	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(1) {
+		t.Fatal("reactivation did not deduct the packs again", q)
+	}
 	draft := call("POST", p+"/invoices", a, body(cid, pid, 1), 201)
 	draftPath := fmt.Sprintf("%s/invoices/%.0f", p, draft["id"])
 	updated := call("PUT", draftPath, a, strings.TrimSuffix(body(cid, pid, 2), "}")+`,"version":1}`, 200)
