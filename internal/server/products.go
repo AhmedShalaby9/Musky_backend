@@ -122,7 +122,7 @@ func (a *API) productBuyers(c *gin.Context) {
 		fail(c, 404, "not found")
 		return
 	}
-	var data []productBuyerRow
+	data := []productBuyerRow{}
 	result = a.orm.WithContext(c.Request.Context()).
 		Table("invoice_items AS ii").
 		Select(`
