@@ -59,6 +59,13 @@ func (a *API) listInvoices(c *gin.Context) {
 		}
 		query = query.Where("status = ?", status)
 	}
+	if documentType := c.Query("document_type"); documentType != "" {
+		if documentType != "sale" && documentType != "purchase" {
+			fail(c, 400, "document_type must be sale or purchase")
+			return
+		}
+		query = query.Where("document_type = ?", documentType)
+	}
 
 	data := []model.Invoice{}
 	if err := query.Order("id DESC").Limit(limit).Offset(offset).Find(&data).Error; err != nil {
