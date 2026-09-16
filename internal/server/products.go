@@ -87,8 +87,66 @@ type productInput struct {
 	Version       int64   `json:"version"`
 }
 
+type productBuyerRow struct {
+	InvoiceID       uint64 `json:"invoice_id"`
+	InvoiceNumber   *int64 `json:"invoice_number"`
+	IssueDate       string `json:"issue_date"`
+	ClientID        uint64 `json:"client_id"`
+	ClientName      string `json:"client_name"`
+	ClientAddress   string `json:"client_address"`
+	PackageCount    int64  `json:"package_count"`
+	UnitsPerPackage int64  `json:"units_per_package"`
+	UnitPriceMinor  int64  `json:"unit_price_minor"`
+	TotalMinor      int64  `json:"total_minor"`
+}
+
 func (a *API) createProduct(c *gin.Context) { a.saveProduct(c, true) }
 func (a *API) updateProduct(c *gin.Context) { a.saveProduct(c, false) }
+func (a *API) productBuyers(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	limit, offset, ok := pagination(c)
+	if !ok {
+		return
+	}
+	var product model.Product
+	result := a.orm.WithContext(c.Request.Context()).Table("products").Select(productColumns).
+		Where("tenant_id = ? AND id = ?", tenantID(c), id).Limit(1).Scan(&product)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	var data []productBuyerRow
+	result = a.orm.WithContext(c.Request.Context()).
+		Table("invoice_items AS ii").
+		Select(`
+			i.id AS invoice_id,
+			i.number AS invoice_number,
+			DATE_FORMAT(i.issue_date, '%Y-%m-%d') AS issue_date,
+			i.client_id AS client_id,
+			i.client_name AS client_name,
+			i.client_address AS client_address,
+			ii.package_count AS package_count,
+			ii.units_per_package AS units_per_package,
+			ii.unit_price_minor AS unit_price_minor,
+			ii.total_minor AS total_minor`).
+		Joins("JOIN invoices AS i ON i.tenant_id = ii.tenant_id AND i.id = ii.invoice_id").
+		Where("ii.tenant_id = ? AND ii.product_id = ? AND i.status = 'posted'", tenantID(c), id).
+		Order("i.issue_date DESC, i.id DESC").
+		Limit(limit).Offset(offset).
+		Scan(&data)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	c.JSON(200, gin.H{"product": product, "data": data, "limit": limit, "offset": offset})
+}
 func (a *API) deleteProduct(c *gin.Context) {
 	id, ok := pathID(c, "id")
 	if !ok {

@@ -124,6 +124,19 @@ func TestMySQLCommerce(t *testing.T) {
 	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(7) {
 		t.Fatal("posting was not idempotent or quantities not packs", q)
 	}
+	buyers := call("GET", productPath+"/buyers?limit=50&offset=0", a, "", 200)
+	buyerRows := buyers["data"].([]any)
+	if len(buyerRows) != 1 {
+		t.Fatal("posted sale was not returned in product buyers", buyers)
+	}
+	buyer := buyerRows[0].(map[string]any)
+	if buyer["client_id"] != float64(cid) || buyer["client_name"] != "Client A" || buyer["invoice_number"] != float64(1) ||
+		buyer["package_count"] != float64(3) || buyer["units_per_package"] != float64(12) ||
+		buyer["unit_price_minor"] != float64(2950) || buyer["total_minor"] != float64(106200) {
+		t.Fatal("wrong product buyer row", buyer)
+	}
+	call("GET", productPath+"/buyers?limit=50&offset=0", b, "", 404)
+	call("GET", fmt.Sprintf("%s/products/%d/buyers?limit=50&offset=0", p, fpid), a, "", 404)
 	call("PATCH", productPath, a, `{"version":2,"quantity":10}`, 409)
 	call("PUT", invoicePath, a, strings.TrimSuffix(body(cid, pid, 1), "}")+`,"version":2}`, 409)
 	call("DELETE", invoicePath+"?version=2", a, "", 409)
@@ -174,6 +187,12 @@ func TestMySQLCommerce(t *testing.T) {
 	}
 	call("POST", invoicePath+"/void", a, `{"version":2,"reason":"Order cancelled"}`, 200)
 	call("POST", invoicePath+"/void", a, `{"version":2,"reason":"Order cancelled"}`, 200)
+	buyers = call("GET", productPath+"/buyers?limit=50&offset=0", a, "", 200)
+	for _, row := range buyers["data"].([]any) {
+		if row.(map[string]any)["invoice_number"] == float64(1) {
+			t.Fatal("void invoice leaked into product buyers", buyers)
+		}
+	}
 	if q := call("GET", productPath, a, "", 200)["quantity"]; q != float64(4) {
 		t.Fatal("void did not restore exactly three packs", q)
 	}

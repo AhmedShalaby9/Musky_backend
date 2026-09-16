@@ -70,6 +70,7 @@ func New(db *sql.DB) *gin.Engine {
 	t.GET("/clients/:id/ledger", a.clientLedger)
 	t.GET("/products", a.listProducts)
 	t.POST("/products", a.createProduct)
+	t.GET("/products/:id/buyers", a.productBuyers)
 	t.GET("/products/:id", a.getProduct)
 	t.PATCH("/products/:id", a.updateProduct)
 	t.DELETE("/products/:id", a.deleteProduct)
