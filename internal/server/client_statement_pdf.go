@@ -179,12 +179,15 @@ func statementDescription(entry model.LedgerEntry) string {
 	switch entry.Kind {
 	case "opening":
 		return "رصيد افتتاحي"
-	case "invoice":
-		return "فاتورة" + number
-	case "void":
-		return "إلغاء فاتورة" + number
+	case "invoice", "purchase", "reactivate", "purchase_reactivate":
+		return invoiceDocumentTypeAr(entry.DocumentType) + number
+	case "void", "purchase_void":
+		return "إلغاء " + invoiceDocumentTypeAr(entry.DocumentType) + number
 	case "invoice_payment":
-		return "دفعة على فاتورة" + number
+		if entry.DocumentType == "purchase" {
+			return "دفعة للمورد" + number
+		}
+		return "دفعة من العميل" + number
 	case "receipt":
 		return "دفعة عامة"
 	case "reversal":

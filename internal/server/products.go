@@ -90,6 +90,7 @@ type productInput struct {
 type productBuyerRow struct {
 	InvoiceID       uint64 `json:"invoice_id"`
 	InvoiceNumber   *int64 `json:"invoice_number"`
+	DocumentType    string `json:"document_type"`
 	IssueDate       string `json:"issue_date"`
 	ClientID        uint64 `json:"client_id"`
 	ClientName      string `json:"client_name"`
@@ -128,6 +129,7 @@ func (a *API) productBuyers(c *gin.Context) {
 		Select(`
 			i.id AS invoice_id,
 			i.number AS invoice_number,
+			i.document_type AS document_type,
 			DATE_FORMAT(i.issue_date, '%Y-%m-%d') AS issue_date,
 			i.client_id AS client_id,
 			i.client_name AS client_name,

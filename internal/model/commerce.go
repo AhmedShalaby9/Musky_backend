@@ -19,6 +19,7 @@ type LedgerEntry struct {
 	Kind           string    `json:"kind"`
 	RefID          *uint64   `json:"ref_id"`
 	InvoiceNumber  *int64    `json:"invoice_number"`
+	DocumentType   string    `json:"document_type,omitempty"`
 	DeltaMinor     int64     `json:"delta_minor"`
 	RunningBalance int64     `json:"running_balance"`
 	Method         *string   `json:"method"`

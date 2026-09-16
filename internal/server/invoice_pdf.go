@@ -72,7 +72,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 	pdf.SetFont(font, "", 12)
 	pdf.CellFormat(0, 8, arabic("للاستيراد والتصدير"), "", 1, "R", false, 0, "")
 	pdf.SetFont(font, "B", 22)
-	pdf.CellFormat(0, 13, arabic("إذن صادر"), "", 1, "R", false, 0, "")
+	pdf.CellFormat(0, 13, arabic(invoiceDocumentTypeAr(invoice.DocumentType)), "", 1, "R", false, 0, "")
 	pdf.SetFont(font, "", 10)
 	pdf.CellFormat(90, 7, arabic("محمد بكري"), "", 0, "L", false, 0, "")
 	pdf.CellFormat(90, 7, arabic("01284550533"), "", 1, "L", false, 0, "")
@@ -169,6 +169,13 @@ func (a *API) invoicePDF(c *gin.Context) {
 }
 
 func arabic(s string) string { return rtl.Shape(s) }
+
+func invoiceDocumentTypeAr(documentType string) string {
+	if documentType == "purchase" {
+		return "فاتورة شراء"
+	}
+	return "فاتورة بيع"
+}
 
 func truncatePDF(value string, max int) string {
 	runes := []rune(value)
