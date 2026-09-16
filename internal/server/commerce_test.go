@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"musky/backend/internal/database"
+	"musky/backend/internal/model"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLineTotal(t *testing.T) {
@@ -23,6 +25,20 @@ func TestLineTotal(t *testing.T) {
 		}
 	}
 }
+
+func TestStatementRowsPeriodBalance(t *testing.T) {
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	entries := []model.LedgerEntry{
+		{Kind: "invoice", DeltaMinor: 2000000, RunningBalance: 2000000, At: time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)},
+		{Kind: "invoice_payment", DeltaMinor: -400000, RunningBalance: 1600000, At: time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)},
+	}
+	rows, opening, closing := statementRows(entries, from, to)
+	if opening != 2000000 || closing != 1600000 || len(rows) != 1 || rows[0].DeltaMinor != -400000 {
+		t.Fatal("wrong statement period balances", opening, closing, rows)
+	}
+}
+
 func TestMySQLCommerce(t *testing.T) {
 	dsn := os.Getenv("MYSQL_COMMERCE_TEST_DSN")
 	if dsn == "" {
@@ -137,6 +153,14 @@ func TestMySQLCommerce(t *testing.T) {
 	}
 	call("GET", productPath+"/buyers?limit=50&offset=0", b, "", 404)
 	call("GET", fmt.Sprintf("%s/products/%d/buyers?limit=50&offset=0", p, fpid), a, "", 404)
+	statement := raw("GET", fmt.Sprintf("%s/clients/%d/statement.pdf?from=2026-09-01&to=2026-09-30", p, cid), a, "")
+	if statement.Code != 200 || !strings.HasPrefix(statement.Header().Get("Content-Type"), "application/pdf") || !strings.HasPrefix(statement.Body.String(), "%PDF") {
+		sample := statement.Body.String()
+		if len(sample) > 20 {
+			sample = sample[:20]
+		}
+		t.Fatal("client statement pdf failed", statement.Code, statement.Header().Get("Content-Type"), sample)
+	}
 	call("PATCH", productPath, a, `{"version":2,"quantity":10}`, 409)
 	call("PUT", invoicePath, a, strings.TrimSuffix(body(cid, pid, 1), "}")+`,"version":2}`, 409)
 	call("DELETE", invoicePath+"?version=2", a, "", 409)
