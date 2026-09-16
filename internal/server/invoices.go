@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,currency,DATE_FORMAT(issue_date,'%Y-%m-%d') AS issue_date,client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at,COALESCE(pdf_url,'') AS pdf_url"
+const invoiceColumns = "id,tenant_id,client_id,created_by_user_id,number,status,document_type,currency,DATE_FORMAT(issue_date,'%Y-%m-%d') AS issue_date,client_name,client_address,notes,void_reason,total_minor,version,created_at,posted_at,voided_at,COALESCE(pdf_url,'') AS pdf_url"
 const maxPrice int64 = 1000000000000
 
 func readInvoice(ctx context.Context, tx *gorm.DB, tenant, id uint64, lock bool) (model.Invoice, error) {
@@ -98,11 +98,12 @@ type invoiceLineInput struct {
 	UnitPriceMinor  *int64 `json:"unit_price_minor"`
 }
 type invoiceInput struct {
-	ClientID  uint64             `json:"client_id"`
-	IssueDate string             `json:"issue_date"`
-	Notes     string             `json:"notes"`
-	Items     []invoiceLineInput `json:"items"`
-	Version   int64              `json:"version"`
+	DocumentType string             `json:"document_type"`
+	ClientID     uint64             `json:"client_id"`
+	IssueDate    string             `json:"issue_date"`
+	Notes        string             `json:"notes"`
+	Items        []invoiceLineInput `json:"items"`
+	Version      int64              `json:"version"`
 }
 
 func lineTotal(unitPrice, unitsPerPackage, packageCount int64) (int64, bool) {
@@ -119,6 +120,13 @@ func (a *API) updateInvoice(c *gin.Context) { a.saveInvoice(c, false) }
 func (a *API) saveInvoice(c *gin.Context, create bool) {
 	var in invoiceInput
 	if !decode(c, &in) {
+		return
+	}
+	if in.DocumentType == "" {
+		in.DocumentType = "sale"
+	}
+	if in.DocumentType != "sale" && in.DocumentType != "purchase" {
+		fail(c, 400, "document_type must be sale or purchase")
 		return
 	}
 	date, err := time.Parse("2006-01-02", in.IssueDate)
@@ -220,7 +228,7 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		items = append(items, model.InvoiceItem{ProductID: p.ID, Title: p.Title, Code: p.Code, PiecesPerUnit: p.PiecesPerUnit, Quantity: packageCount, UnitsPerPackage: unitsPerPackage, PackageCount: packageCount, UnitPriceMinor: price, TotalMinor: amount})
 	}
 	if create {
-		row := model.Invoice{TenantID: tenantID(c), ClientID: in.ClientID, CreatedByUserID: actor(c).ID, IssueDate: in.IssueDate, ClientName: name, ClientAddress: address, Notes: in.Notes, TotalMinor: total, Status: "draft", Currency: "EGP", Version: 1}
+		row := model.Invoice{TenantID: tenantID(c), ClientID: in.ClientID, CreatedByUserID: actor(c).ID, IssueDate: in.IssueDate, ClientName: name, ClientAddress: address, Notes: in.Notes, TotalMinor: total, DocumentType: in.DocumentType, Status: "draft", Currency: "EGP", Version: 1}
 		rowTable := tx.Create(&row)
 		if rowTable.Error != nil {
 			databaseError(c, rowTable.Error)
@@ -228,7 +236,7 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		}
 		id = row.ID
 	} else {
-		if err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"client_id": in.ClientID, "issue_date": in.IssueDate, "client_name": name, "client_address": address, "notes": in.Notes, "total_minor": total, "version": gorm.Expr("version + 1")}).Error; err != nil {
+		if err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"client_id": in.ClientID, "issue_date": in.IssueDate, "client_name": name, "client_address": address, "notes": in.Notes, "total_minor": total, "document_type": in.DocumentType, "version": gorm.Expr("version + 1")}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
@@ -383,7 +391,7 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 			delta := item.Quantity
 			kind := "void"
 			if target == "posted" || reactivate {
-				if !p.Active || p.Quantity < item.Quantity {
+				if !p.Active || (v.DocumentType == "sale" && p.Quantity < item.Quantity) {
 					fail(c, 409, fmt.Sprintf("insufficient stock or archived product: %s", item.Title))
 					return
 				}
@@ -391,11 +399,29 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 					fail(c, 409, "pack size changed; edit and save the draft before posting")
 					return
 				}
-				delta = -item.Quantity
+				if v.DocumentType == "sale" {
+					delta = -item.Quantity
+				}
 				kind = "sale"
-			} else if p.Quantity > maxQuantity-item.Quantity {
+				if v.DocumentType == "purchase" {
+					delta = item.Quantity
+					kind = "purchase"
+				}
+				if reactivate {
+					if v.DocumentType == "purchase" {
+						kind = "purchase_reactivate"
+					} else {
+						kind = "reactivate"
+					}
+				}
+			} else if v.DocumentType == "sale" && p.Quantity > maxQuantity-item.Quantity {
 				fail(c, 409, "stock limit would be exceeded by reversal")
 				return
+			} else if v.DocumentType == "purchase" && p.Quantity < item.Quantity {
+				fail(c, 409, "insufficient stock to reverse this purchase")
+				return
+			} else if v.DocumentType == "purchase" {
+				delta = -item.Quantity
 			}
 			if err = tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenantID(c), p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", delta), "version": gorm.Expr("version + 1")}).Error; err != nil {
 				databaseError(c, err)
@@ -407,10 +433,27 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 			}
 		}
 		amount := v.TotalMinor
+		if v.DocumentType == "purchase" {
+			amount = -amount
+		}
 		kind := "invoice"
+		if v.DocumentType == "purchase" {
+			kind = "purchase"
+		}
+		if reactivate {
+			if v.DocumentType == "purchase" {
+				kind = "purchase_reactivate"
+			} else {
+				kind = "reactivate"
+			}
+		}
 		if target == "void" {
 			amount = -amount
-			kind = "void"
+			if v.DocumentType == "purchase" {
+				kind = "purchase_void"
+			} else {
+				kind = "void"
+			}
 		}
 		if err = tx.Create(&clientLedgerRecord{TenantID: tenantID(c), ClientID: v.ClientID, InvoiceID: id, Kind: kind, AmountMinor: amount}).Error; err != nil {
 			databaseError(c, err)

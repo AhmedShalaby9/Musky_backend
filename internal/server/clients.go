@@ -34,7 +34,7 @@ func clientFromRecord(v clientRecord) model.Client {
 // Aggregate once per tenant and share the balance formula across all endpoints.
 func clientDisplayQuery(db *gorm.DB, tenant uint64) *gorm.DB {
 	ledger := db.Model(&clientLedgerRecord{}).Select("client_id, SUM(amount_minor) AS amount").Where("tenant_id = ?", tenant).Group("client_id")
-	payments := db.Model(&paymentRecord{}).Select("client_id, SUM(amount_minor) AS amount, MAX(paid_at) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
+	payments := db.Table("invoice_payments p").Select("p.client_id, SUM(CASE WHEN i.document_type='purchase' THEN -p.amount_minor ELSE p.amount_minor END) AS amount, MAX(p.paid_at) AS last_at").Joins("JOIN invoices i ON i.tenant_id=p.tenant_id AND i.id=p.invoice_id").Where("p.tenant_id = ?", tenant).Group("p.client_id")
 	receipts := db.Model(&model.ClientReceipt{}).Select("client_id, SUM(IF(reversal_of_id IS NULL,amount_minor,-amount_minor)) AS amount, MAX(IF(reversal_of_id IS NULL,received_at,NULL)) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
 	return db.Table("clients c").Select("c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at,"+
 		"(c.opening_balance_minor + COALESCE(l.amount,0) - COALESCE(p.amount,0) - COALESCE(r.amount,0)) AS balance_minor,"+

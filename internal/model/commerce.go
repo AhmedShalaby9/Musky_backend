@@ -45,6 +45,7 @@ type Invoice struct {
 	CreatedByUserID uint64        `json:"created_by_user_id"`
 	Number          *int64        `json:"number"`
 	Status          string        `json:"status"`
+	DocumentType    string        `json:"document_type"`
 	Currency        string        `json:"currency"`
 	IssueDate       string        `json:"issue_date"`
 	ClientName      string        `json:"client_name"`
