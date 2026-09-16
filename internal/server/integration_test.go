@@ -103,6 +103,7 @@ func TestMySQLTenantIsolation(t *testing.T) {
 	tr := login("staff@musky.test")
 	call("GET", p1+"/users", tr, "", 200)
 	call("POST", p1+"/users", tr, `{}`, 403)
+	call("PATCH", fmt.Sprintf("%s/users/%d", p1, owner1), tr, `{"password":"admin-reset-12345"}`, 200)
 	call("PATCH", staffPath, a, `{"role":"trader"}`, 409)
 	call("POST", p1+"/clients", tr, fmt.Sprintf(`{"name":"Invalid owner","user_id":%d}`, owner2), 404)
 	call("POST", p1+"/clients", a, fmt.Sprintf(`{"name":"Invalid owner","user_id":%d}`, owner2), 404)
@@ -124,7 +125,9 @@ func TestMySQLTenantIsolation(t *testing.T) {
 	call("PATCH", clientPath, tr, `{"address":"123 Street"}`, 200)
 	call("DELETE", clientPath, tr, "", 204)
 	archived := call("GET", clientPath, a, "", 200)
-	if archived["active"] != false { t.Fatal("client was not archived", archived) }
+	if archived["active"] != false {
+		t.Fatal("client was not archived", archived)
+	}
 	call("DELETE", clientPath, a, "", 404)
 	call("GET", p1+"/clients?limit=0", a, "", 400)
 	call("GET", p1+"/users/abc", a, "", 400)

@@ -171,8 +171,12 @@ func (a *API) saveUser(c *gin.Context, in updateUserInput, deleted bool) {
 			return result.Error
 		}
 		u = userFromRecord(stored)
-		if u.Role == model.Trader && actor(c).Role != model.SuperAdmin {
-			return apiError{status: 403, message: "only super_admin can manage the trader account; use /me/password to change your password"}
+		manager := actor(c)
+		if u.Role == model.Trader && manager.Role != model.SuperAdmin && manager.Role != model.Admin {
+			return apiError{status: 403, message: "only admins can change the trader password"}
+		}
+		if manager.Role == model.Admin && (u.Role != model.Trader || in.Password == nil || in.Name != nil || in.Email != nil || in.Role != nil || in.Active != nil) {
+			return apiError{status: 403, message: "admins may only change the trader password"}
 		}
 		if in.Role != nil && *in.Role != u.Role {
 			return apiError{status: 409, message: "roles cannot be changed between trader owners and tenant admins"}

@@ -59,7 +59,7 @@ func New(db *sql.DB) *gin.Engine {
 	t.GET("/users", a.listUsers)
 	t.POST("/users", accountManagers, a.createUser)
 	t.GET("/users/:id", a.getUser)
-	t.PATCH("/users/:id", accountManagers, a.updateUser)
+	t.PATCH("/users/:id", userManagers, a.updateUser)
 	t.DELETE("/users/:id", accountManagers, a.deactivateUser)
 	t.GET("/clients", a.listClients)
 	t.POST("/clients", a.createClient)
@@ -162,6 +162,12 @@ func onlySuper(c *gin.Context) {
 func accountManagers(c *gin.Context) {
 	if actor(c).Role == model.Admin {
 		fail(c, 403, "trader owner or super_admin required")
+	}
+}
+
+func userManagers(c *gin.Context) {
+	if actor(c).Role != model.SuperAdmin && actor(c).Role != model.Trader && actor(c).Role != model.Admin {
+		fail(c, 403, "user management access required")
 	}
 }
 func (a *API) tenantScope(c *gin.Context) {
