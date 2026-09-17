@@ -39,6 +39,7 @@ type Client struct {
 	Address             string  `json:"address"`
 	Active              bool    `json:"active"`
 	OpeningBalanceMinor int64   `json:"opening_balance_minor"`
+	OpeningBalanceType  string  `json:"opening_balance_type"`
 	// BalanceMinor is computed: opening_balance_minor + posted invoices − payments.
 	// Positive = client owes us; negative = we owe client.
 	BalanceMinor int64 `json:"balance_minor"`

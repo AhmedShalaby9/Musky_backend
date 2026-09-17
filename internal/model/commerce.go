@@ -8,6 +8,7 @@ type ClientReceipt struct {
 	ClientID         uint64    `json:"client_id"`
 	ReceivedByUserID uint64    `json:"received_by_user_id"`
 	AmountMinor      int64     `json:"amount_minor"`
+	Direction        string    `json:"direction"`
 	Method           string    `json:"method"`
 	Notes            string    `json:"notes"`
 	ReversalOfID     *uint64   `json:"reversal_of_id"`

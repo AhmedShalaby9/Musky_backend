@@ -11,7 +11,7 @@ import (
 )
 
 // clientStoredCols selects the persisted columns only (no alias required).
-const clientStoredCols = "id,tenant_id,user_id,name,phone,address,active,opening_balance_minor,created_at"
+const clientStoredCols = "id,tenant_id,user_id,name,phone,address,active,opening_balance_minor,opening_balance_type,created_at"
 
 type clientRecord struct {
 	ID                  uint64
@@ -22,22 +22,23 @@ type clientRecord struct {
 	Address             string
 	Active              bool
 	OpeningBalanceMinor int64
+	OpeningBalanceType  string
 	CreatedAt           time.Time
 }
 
 func (clientRecord) TableName() string { return "clients" }
 
 func clientFromRecord(v clientRecord) model.Client {
-	return model.Client{ID: v.ID, TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor, CreatedAt: v.CreatedAt}
+	return model.Client{ID: v.ID, TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor, OpeningBalanceType: v.OpeningBalanceType, CreatedAt: v.CreatedAt}
 }
 
 // Aggregate once per tenant and share the balance formula across all endpoints.
 func clientDisplayQuery(db *gorm.DB, tenant uint64) *gorm.DB {
 	ledger := db.Model(&clientLedgerRecord{}).Select("client_id, SUM(amount_minor) AS amount").Where("tenant_id = ?", tenant).Group("client_id")
 	payments := db.Table("invoice_payments p").Select("p.client_id, SUM(CASE WHEN i.document_type='purchase' THEN -p.amount_minor ELSE p.amount_minor END) AS amount, MAX(p.paid_at) AS last_at").Joins("JOIN invoices i ON i.tenant_id=p.tenant_id AND i.id=p.invoice_id").Where("p.tenant_id = ?", tenant).Group("p.client_id")
-	receipts := db.Model(&model.ClientReceipt{}).Select("client_id, SUM(IF(reversal_of_id IS NULL,amount_minor,-amount_minor)) AS amount, MAX(IF(reversal_of_id IS NULL,received_at,NULL)) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
-	return db.Table("clients c").Select("c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.created_at,"+
-		"(c.opening_balance_minor + COALESCE(l.amount,0) - COALESCE(p.amount,0) - COALESCE(r.amount,0)) AS balance_minor,"+
+	receipts := db.Model(&model.ClientReceipt{}).Select("client_id, SUM(IF(reversal_of_id IS NULL,IF(direction='out',-amount_minor,amount_minor),IF(direction='out',amount_minor,-amount_minor))) AS amount, MAX(IF(reversal_of_id IS NULL,received_at,NULL)) AS last_at").Where("tenant_id = ?", tenant).Group("client_id")
+	return db.Table("clients c").Select("c.id,c.tenant_id,c.user_id,c.name,c.phone,c.address,c.active,c.opening_balance_minor,c.opening_balance_type,c.created_at,"+
+		"((CASE WHEN c.opening_balance_type='payable' THEN -c.opening_balance_minor ELSE c.opening_balance_minor END) + COALESCE(l.amount,0) - COALESCE(p.amount,0) - COALESCE(r.amount,0)) AS balance_minor,"+
 		"CASE WHEN p.last_at IS NULL THEN r.last_at WHEN r.last_at IS NULL THEN p.last_at ELSE GREATEST(p.last_at,r.last_at) END AS last_payment_at").
 		Joins("LEFT JOIN (?) l ON l.client_id = c.id", ledger).
 		Joins("LEFT JOIN (?) p ON p.client_id = c.id", payments).
@@ -51,6 +52,7 @@ type clientInput struct {
 	Address             *string `json:"address"`
 	Active              *bool   `json:"active"`
 	OpeningBalanceMinor *int64  `json:"opening_balance_minor"`
+	OpeningBalanceType  *string `json:"opening_balance_type"`
 }
 
 func (in *clientInput) valid() bool {
@@ -64,6 +66,9 @@ func (in *clientInput) valid() bool {
 		return false
 	}
 	if in.Address != nil && !validText(*in.Address, 0, 500) {
+		return false
+	}
+	if in.OpeningBalanceType != nil && *in.OpeningBalanceType != "receivable" && *in.OpeningBalanceType != "payable" {
 		return false
 	}
 	return in.UserID == nil || *in.UserID > 0
@@ -91,6 +96,13 @@ func (in clientInput) apply(v *model.Client) {
 	}
 	if in.OpeningBalanceMinor != nil {
 		v.OpeningBalanceMinor = *in.OpeningBalanceMinor
+		if v.OpeningBalanceMinor < 0 {
+			v.OpeningBalanceMinor = -v.OpeningBalanceMinor
+			v.OpeningBalanceType = "payable"
+		}
+	}
+	if in.OpeningBalanceType != nil {
+		v.OpeningBalanceType = *in.OpeningBalanceType
 	}
 }
 
@@ -172,7 +184,7 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		fail(c, 400, "invalid client fields; name is required on creation")
 		return
 	}
-	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Address == nil && in.Active == nil && in.OpeningBalanceMinor == nil {
+	if !create && in.UserID == nil && in.Name == nil && in.Phone == nil && in.Address == nil && in.Active == nil && in.OpeningBalanceMinor == nil && in.OpeningBalanceType == nil {
 		fail(c, 400, "no changes provided")
 		return
 	}
@@ -220,7 +232,7 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		}
 	}
 	if create {
-		record := clientRecord{TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor}
+		record := clientRecord{TenantID: v.TenantID, UserID: v.UserID, Name: v.Name, Phone: v.Phone, Address: v.Address, Active: v.Active, OpeningBalanceMinor: v.OpeningBalanceMinor, OpeningBalanceType: v.OpeningBalanceType}
 		result := tx.Create(&record)
 		if result.Error != nil {
 			databaseError(c, result.Error)
@@ -230,7 +242,7 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 	} else {
 		result := tx.Model(&clientRecord{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{
 			"user_id": v.UserID, "name": v.Name, "phone": v.Phone, "address": v.Address,
-			"active": v.Active, "opening_balance_minor": v.OpeningBalanceMinor,
+			"active": v.Active, "opening_balance_minor": v.OpeningBalanceMinor, "opening_balance_type": v.OpeningBalanceType,
 		})
 		if result.Error != nil {
 			databaseError(c, result.Error)

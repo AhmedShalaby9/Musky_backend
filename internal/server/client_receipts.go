@@ -10,12 +10,13 @@ import (
 
 type receiptInput struct {
 	AmountMinor int64  `json:"amount_minor"`
+	Direction   string `json:"direction"`
 	Method      string `json:"method"`
 	Notes       string `json:"notes"`
 }
 
 func (in *receiptInput) valid() bool {
-	return in.AmountMinor >= 1 && in.AmountMinor <= 1000000000000 && (in.Method == "cash" || in.Method == "online") && validText(in.Notes, 0, 500)
+	return in.AmountMinor >= 1 && in.AmountMinor <= 1000000000000 && (in.Method == "cash" || in.Method == "online") && (in.Direction == "in" || in.Direction == "out") && validText(in.Notes, 0, 500)
 }
 
 func clientBalance(db *gorm.DB, tenant, id uint64) (model.Client, error) {
@@ -39,7 +40,7 @@ func loadClientLedger(ctx context.Context, db *gorm.DB, tenant, clientID uint64)
 	opening := tx.Table("clients c").Select("'opening' AS kind, NULL AS ref_id, NULL AS invoice_number, '' AS document_type, c.opening_balance_minor AS delta_minor, NULL AS method, '' AS notes, c.created_at AS at").Where("c.tenant_id = ? AND c.id = ?", tenant, clientID)
 	ledger := tx.Table("client_ledger l").Select("l.kind, i.id AS ref_id, i.number AS invoice_number, i.document_type, l.amount_minor AS delta_minor, NULL AS method, COALESCE(i.void_reason,'') AS notes, CASE WHEN l.kind IN ('void','purchase_void') THEN COALESCE(i.voided_at,i.posted_at,i.created_at) ELSE COALESCE(i.posted_at,i.created_at) END AS at").Joins("JOIN invoices i ON i.id=l.invoice_id AND i.tenant_id=l.tenant_id").Where("l.tenant_id = ? AND l.client_id = ?", tenant, clientID)
 	payments := tx.Table("invoice_payments p").Select("'invoice_payment' AS kind, p.invoice_id AS ref_id, i.number AS invoice_number, i.document_type, CASE WHEN i.document_type='purchase' THEN p.amount_minor ELSE -p.amount_minor END AS delta_minor, p.method, p.notes, p.paid_at AS at").Joins("JOIN invoices i ON i.id=p.invoice_id AND i.tenant_id=p.tenant_id").Where("p.tenant_id = ? AND p.client_id = ?", tenant, clientID)
-	receipts := tx.Model(&model.ClientReceipt{}).Select("IF(reversal_of_id IS NULL,'receipt','reversal') AS kind, id AS ref_id, NULL AS invoice_number, '' AS document_type, IF(reversal_of_id IS NULL,-amount_minor,amount_minor) AS delta_minor, method, notes, received_at AS at").Where("tenant_id = ? AND client_id = ?", tenant, clientID)
+	receipts := tx.Model(&model.ClientReceipt{}).Select("IF(reversal_of_id IS NULL,IF(direction='out','client_payment','receipt'), 'reversal') AS kind, id AS ref_id, NULL AS invoice_number, '' AS document_type, IF(reversal_of_id IS NULL,IF(direction='out',amount_minor,-amount_minor),IF(direction='out',-amount_minor,amount_minor)) AS delta_minor, method, notes, received_at AS at").Where("tenant_id = ? AND client_id = ?", tenant, clientID)
 	entries := []model.LedgerEntry{}
 	if err := tx.Table("(? UNION ALL ? UNION ALL ? UNION ALL ?) entries", opening, ledger, payments, receipts).Order("at,kind,ref_id").Scan(&entries).Error; err != nil {
 		return client, nil, err
@@ -61,6 +62,9 @@ func (a *API) createClientReceipt(c *gin.Context) {
 	if !decode(c, &in) {
 		return
 	}
+	if in.Direction == "" {
+		in.Direction = "in"
+	}
 	if !in.valid() {
 		fail(c, 400, "invalid receipt fields")
 		return
@@ -75,15 +79,23 @@ func (a *API) createClientReceipt(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	if client.BalanceMinor <= 0 {
-		fail(c, 422, "رصيد العميل صفر أو دائن، لا يمكن تسجيل دفعة")
+	if in.Direction == "in" && client.BalanceMinor <= 0 {
+		fail(c, 422, "لا يوجد رصيد مستحق من العميل")
 		return
 	}
-	if in.AmountMinor > client.BalanceMinor {
+	if in.Direction == "in" && in.AmountMinor > client.BalanceMinor {
 		fail(c, 422, "المبلغ أكبر من رصيد العميل")
 		return
 	}
-	receipt := model.ClientReceipt{TenantID: tenantID(c), ClientID: clientID, ReceivedByUserID: actor(c).ID, AmountMinor: in.AmountMinor, Method: in.Method, Notes: in.Notes}
+	if in.Direction == "out" && client.BalanceMinor >= 0 {
+		fail(c, 422, "لا يوجد رصيد مستحق للعميل")
+		return
+	}
+	if in.Direction == "out" && in.AmountMinor > -client.BalanceMinor {
+		fail(c, 422, "المبلغ أكبر من رصيد العميل الدائن")
+		return
+	}
+	receipt := model.ClientReceipt{TenantID: tenantID(c), ClientID: clientID, ReceivedByUserID: actor(c).ID, AmountMinor: in.AmountMinor, Direction: in.Direction, Method: in.Method, Notes: in.Notes}
 	if err := tx.Create(&receipt).Error; err != nil {
 		databaseError(c, err)
 		return
