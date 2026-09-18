@@ -42,7 +42,17 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           password: ${{ secrets.DEPLOY_PASSWORD }}
           script: |
+            set -eu
             chmod +x /opt/musky/musky-server
+            systemctl reset-failed musky || true
             systemctl start musky
-            sleep 3
-            systemctl is-active musky
+            for i in $(seq 1 10); do
+              if systemctl is-active --quiet musky; then
+                echo "musky is active"
+                exit 0
+              fi
+              sleep 1
+            done
+            systemctl status musky --no-pager || true
+            journalctl -u musky -n 100 --no-pager || true
+            exit 1

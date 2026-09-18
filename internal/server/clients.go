@@ -232,6 +232,10 @@ func (a *API) deleteClientAssociations(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
+	if err := tx.Model(&model.ClientReceipt{}).Where("tenant_id = ? AND client_id = ?", tenantID(c), id).Update("reversal_of_id", nil).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
 	for _, q := range []any{&paymentRecord{}, &clientLedgerRecord{}, &model.ClientReceipt{}} {
 		if err := tx.Where("tenant_id = ? AND client_id = ?", tenantID(c), id).Delete(q).Error; err != nil {
 			databaseError(c, err)
