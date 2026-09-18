@@ -66,6 +66,8 @@ func New(db *sql.DB) *gin.Engine {
 	t.GET("/clients/:id", a.getClient)
 	t.PATCH("/clients/:id", a.updateClient)
 	t.DELETE("/clients/:id", a.deleteClient)
+	t.GET("/clients/:id/associations", a.clientAssociations)
+	t.DELETE("/clients/:id/associations", a.deleteClientAssociations)
 	t.POST("/clients/:id/receipts", a.createClientReceipt)
 	t.PATCH("/clients/:id/receipts/:receiptID", a.updateClientReceipt)
 	t.GET("/clients/:id/ledger", a.clientLedger)

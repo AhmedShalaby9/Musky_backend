@@ -161,15 +161,85 @@ func (a *API) deleteClient(c *gin.Context) {
 	if !ok {
 		return
 	}
-	result := a.orm.WithContext(c.Request.Context()).Model(&clientRecord{}).
-		Where("tenant_id = ? AND id = ?", tenantID(c), id).
-		Update("active", false)
+	db := a.orm.WithContext(c.Request.Context())
+	var counts struct{ Invoices, Payments, Ledger, Receipts int64 }
+	row := db.Table("clients c").Select("(SELECT COUNT(*) FROM invoices WHERE tenant_id=c.tenant_id AND client_id=c.id) invoices, (SELECT COUNT(*) FROM invoice_payments WHERE tenant_id=c.tenant_id AND client_id=c.id) payments, (SELECT COUNT(*) FROM client_ledger WHERE tenant_id=c.tenant_id AND client_id=c.id) ledger, (SELECT COUNT(*) FROM client_receipts WHERE tenant_id=c.tenant_id AND client_id=c.id AND reversal_of_id IS NULL) receipts").Where("c.tenant_id = ? AND c.id = ?", tenantID(c), id).Scan(&counts)
+	if row.Error != nil {
+		databaseError(c, row.Error)
+		return
+	}
+	if row.RowsAffected == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	if counts.Payments != 0 || counts.Ledger != 0 || counts.Receipts != 0 {
+		c.JSON(409, gin.H{"error": "client has removable associations", "associations": counts})
+		return
+	}
+	result := db.Where("tenant_id = ? AND id = ?", tenantID(c), id).Delete(&clientRecord{})
 	if result.Error != nil {
 		databaseError(c, result.Error)
 		return
 	}
 	if result.RowsAffected == 0 {
 		fail(c, 404, "not found")
+		return
+	}
+	c.Status(204)
+}
+
+func (a *API) clientAssociations(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	var out struct{ Invoices, Payments, Ledger, Receipts int64 }
+	db := a.orm.WithContext(c.Request.Context())
+	result := db.Table("clients c").Select("(SELECT COUNT(*) FROM invoices WHERE tenant_id=c.tenant_id AND client_id=c.id) invoices, (SELECT COUNT(*) FROM invoice_payments WHERE tenant_id=c.tenant_id AND client_id=c.id) payments, (SELECT COUNT(*) FROM client_ledger WHERE tenant_id=c.tenant_id AND client_id=c.id) ledger, (SELECT COUNT(*) FROM client_receipts WHERE tenant_id=c.tenant_id AND client_id=c.id AND reversal_of_id IS NULL) receipts").Where("c.tenant_id = ? AND c.id = ?", tenantID(c), id).Scan(&out)
+	if result.Error != nil {
+		databaseError(c, result.Error)
+		return
+	}
+	if result.RowsAffected == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	c.JSON(200, gin.H{"associations": out, "invoices_can_be_kept": true})
+}
+
+func (a *API) deleteClientAssociations(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	var exists int64
+	if err := tx.Model(&clientRecord{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Count(&exists).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if exists == 0 {
+		fail(c, 404, "not found")
+		return
+	}
+	// Preserve invoices and their snapshot data, but detach them from the
+	// client. Invoice payments and client ledger/receipt entries are removable.
+	if err := tx.Model(&model.Invoice{}).Where("tenant_id = ? AND client_id = ?", tenantID(c), id).Update("client_id", nil).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	for _, q := range []any{&paymentRecord{}, &clientLedgerRecord{}, &model.ClientReceipt{}} {
+		if err := tx.Where("tenant_id = ? AND client_id = ?", tenantID(c), id).Delete(q).Error; err != nil {
+			databaseError(c, err)
+			return
+		}
+	}
+	if err := tx.Commit().Error; err != nil {
+		databaseError(c, err)
 		return
 	}
 	c.Status(204)
