@@ -116,6 +116,73 @@ func (a *API) createClientReceipt(c *gin.Context) {
 	c.JSON(201, gin.H{"receipt": receipt, "balance_minor": client.BalanceMinor})
 }
 
+func (a *API) updateClientReceipt(c *gin.Context) {
+	clientID, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	receiptID, ok := pathID(c, "receiptID")
+	if !ok {
+		return
+	}
+	var in receiptInput
+	if !decode(c, &in) || in.Direction == "" || !in.valid() {
+		fail(c, 400, "invalid receipt fields")
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	var receipt model.ClientReceipt
+	if err := tx.Where("tenant_id = ? AND id = ? AND client_id = ? AND reversal_of_id IS NULL", tenantID(c), receiptID, clientID).Take(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	client, err := clientBalance(tx, tenantID(c), clientID)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	oldEffect := receipt.AmountMinor
+	if receipt.Direction == "in" {
+		oldEffect = -oldEffect
+	}
+	base := client.BalanceMinor - oldEffect
+	newEffect := in.AmountMinor
+	if in.Direction == "in" {
+		newEffect = -newEffect
+	}
+	resulting := base + newEffect
+	if resulting < 0 && in.Direction != "out" {
+		fail(c, 422, "المبلغ أكبر من رصيد العميل")
+		return
+	}
+	if resulting > 0 && in.Direction != "in" {
+		fail(c, 422, "المبلغ أكبر من رصيد العميل الدائن")
+		return
+	}
+	if err = tx.Model(&receipt).Updates(map[string]any{"amount_minor": in.AmountMinor, "direction": in.Direction, "method": in.Method, "notes": in.Notes}).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err = tx.Where("tenant_id = ? AND id = ?", tenantID(c), receiptID).Take(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	client, err = clientBalance(tx, tenantID(c), clientID)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err = tx.Commit().Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"receipt": receipt, "balance_minor": client.BalanceMinor})
+}
+
 func (a *API) clientLedger(c *gin.Context) {
 	clientID, ok := pathID(c, "id")
 	if !ok {
