@@ -530,7 +530,22 @@ func (a *API) financialSummary(c *gin.Context) {
 		return
 	}
 	receivables, payables, net = summary.Receivables, summary.Payables, summary.Net
-	c.JSON(200, gin.H{"currency": "EGP", "receivables_minor": receivables, "payables_minor": payables, "net_minor": net, "scope": "posted_invoices_and_voids"})
+	// Return the contributing balances as well as the totals. This makes the
+	// summary auditable when a deleted or newly-created client appears to affect
+	// the numbers unexpectedly.
+	var clients []model.Client
+	if err = balances.Order("ABS(balance_minor) DESC, c.id").Scan(&clients).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{
+		"currency":          "EGP",
+		"receivables_minor": receivables,
+		"payables_minor":    payables,
+		"net_minor":         net,
+		"scope":             "opening_balances_posted_invoices_payments_and_receipts",
+		"clients":           clients,
+	})
 }
 
 type paymentInput struct {

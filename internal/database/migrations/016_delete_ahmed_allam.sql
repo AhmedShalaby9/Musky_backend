@@ -3,13 +3,13 @@ CREATE TEMPORARY TABLE purge_ahmed_allam_invoices AS
 SELECT i.id AS invoice_id, i.tenant_id
 FROM invoices i
 JOIN clients c ON c.tenant_id = i.tenant_id AND c.id = i.client_id
-WHERE TRIM(c.name) IN ('أحمد علام','احمد علام');
+WHERE TRIM(c.name) IN ('أحمد علام','احمد علام','Ahmed Allam','ahmed allam');
 
 CREATE TEMPORARY TABLE purge_ahmed_allam_receipts AS
 SELECT r.id AS receipt_id
 FROM client_receipts r
 JOIN clients c ON c.tenant_id = r.tenant_id AND c.id = r.client_id
-WHERE TRIM(c.name) IN ('أحمد علام','احمد علام');
+WHERE TRIM(c.name) IN ('أحمد علام','احمد علام','Ahmed Allam','ahmed allam');
 
 UPDATE products p
 JOIN (
@@ -32,7 +32,7 @@ DELETE sm FROM stock_movements sm JOIN purge_ahmed_allam_invoices i ON i.tenant_
 DELETE ii FROM invoice_items ii JOIN purge_ahmed_allam_invoices i ON i.tenant_id = ii.tenant_id AND i.invoice_id = ii.invoice_id;
 DELETE r FROM client_receipts r JOIN purge_ahmed_allam_receipts removed ON removed.receipt_id = r.id;
 DELETE i FROM invoices i JOIN purge_ahmed_allam_invoices removed ON removed.tenant_id = i.tenant_id AND removed.invoice_id = i.id;
-DELETE c FROM clients c WHERE TRIM(c.name) IN ('أحمد علام','احمد علام');
+DELETE c FROM clients c WHERE TRIM(c.name) IN ('أحمد علام','احمد علام','Ahmed Allam','ahmed allam');
 
 DROP TEMPORARY TABLE purge_ahmed_allam_receipts;
 DROP TEMPORARY TABLE purge_ahmed_allam_invoices;
