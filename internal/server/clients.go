@@ -126,6 +126,16 @@ func (a *API) listClients(c *gin.Context) {
 		}
 		query = query.Having("last_payment_at IS NULL OR last_payment_at < UTC_TIMESTAMP() - INTERVAL ? DAY", days)
 	}
+	switch c.Query("balance") {
+	case "", "all":
+	case "receivable":
+		query = query.Having("balance_minor > 0")
+	case "payable":
+		query = query.Having("balance_minor < 0")
+	default:
+		fail(c, 400, "balance must be all, receivable, or payable")
+		return
+	}
 	data := []model.Client{}
 	result := query.Order("c.id").Limit(limit).Offset(offset).Scan(&data)
 	if result.Error != nil {

@@ -109,12 +109,17 @@ func TestMySQLCommerce(t *testing.T) {
 	call("PATCH", fmt.Sprintf("%s/products/%d", other, pid), b, `{"version":1,"quantity":999}`, 404)
 	call("DELETE", fmt.Sprintf("%s/products/%d?version=1", other, pid), b, "", 404)
 	call("POST", p+"/products", a, `{"title":"Bad","code":"BAD","quantity":-1,"pieces_per_unit":12}`, 400)
+	throwaway := call("POST", p+"/products", a, `{"title":"Delete me","code":"DEL","quantity":2,"pieces_per_unit":6}`, 201)
+	throwawayPath := fmt.Sprintf("%s/products/%.0f", p, throwaway["id"])
+	call("DELETE", throwawayPath, a, "", 204)
+	call("GET", throwawayPath, a, "", 404)
 	body := func(client, product int, qty int64) string {
 		return fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"quantity":%d,"units_per_package":12,"unit_price_minor":2950}]}`, client, product, qty)
 	}
 	call("POST", p+"/invoices", a, body(foreignID, pid, 1), 404)
 	call("POST", p+"/invoices", a, body(cid, fpid, 1), 404)
 	inv := call("POST", p+"/invoices", a, body(cid, pid, 3), 201)
+	call("DELETE", productPath, a, "", 409)
 	iid := int(inv["id"].(float64))
 	invoicePath := fmt.Sprintf("%s/invoices/%d", p, iid)
 	if inv["total_minor"] != float64(106200) || inv["currency"] != "EGP" {
@@ -153,6 +158,33 @@ func TestMySQLCommerce(t *testing.T) {
 	}
 	call("GET", productPath+"/buyers?limit=50&offset=0", b, "", 404)
 	call("GET", fmt.Sprintf("%s/products/%d/buyers?limit=50&offset=0", p, fpid), a, "", 404)
+	receipt := call("POST", fmt.Sprintf("%s/clients/%d/receipts", p, cid), a, `{"amount_minor":10000,"method":"cash","notes":"deposit","direction":"in"}`, 201)
+	receiptID := int(receipt["receipt"].(map[string]any)["id"].(float64))
+	ledger := call("GET", fmt.Sprintf("%s/clients/%d/ledger", p, cid), a, "", 200)
+	if ledger["client"].(map[string]any)["balance_minor"] != float64(96200) {
+		t.Fatal("receipt did not reduce client balance", ledger)
+	}
+	foundReceipt := false
+	for _, row := range ledger["entries"].([]any) {
+		entry := row.(map[string]any)
+		if entry["kind"] == "receipt" && entry["ref_id"] == float64(receiptID) {
+			foundReceipt = true
+		}
+	}
+	if !foundReceipt {
+		t.Fatal("receipt missing from ledger before delete", ledger)
+	}
+	call("DELETE", fmt.Sprintf("%s/clients/%d/receipts/%d", p, cid, receiptID), a, "", 204)
+	ledger = call("GET", fmt.Sprintf("%s/clients/%d/ledger", p, cid), a, "", 200)
+	if ledger["client"].(map[string]any)["balance_minor"] != float64(106200) {
+		t.Fatal("receipt delete did not restore client balance", ledger)
+	}
+	for _, row := range ledger["entries"].([]any) {
+		entry := row.(map[string]any)
+		if entry["ref_id"] == float64(receiptID) && (entry["kind"] == "receipt" || entry["kind"] == "client_payment" || entry["kind"] == "reversal") {
+			t.Fatal("deleted receipt still visible in ledger", ledger)
+		}
+	}
 	statement := raw("GET", fmt.Sprintf("%s/clients/%d/statement.pdf?from=2026-09-01&to=2026-09-30", p, cid), a, "")
 	if statement.Code != 200 || !strings.HasPrefix(statement.Header().Get("Content-Type"), "application/pdf") || !strings.HasPrefix(statement.Body.String(), "%PDF") {
 		sample := statement.Body.String()

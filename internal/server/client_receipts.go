@@ -183,6 +183,40 @@ func (a *API) updateClientReceipt(c *gin.Context) {
 	c.JSON(200, gin.H{"receipt": receipt, "balance_minor": client.BalanceMinor})
 }
 
+func (a *API) deleteClientReceipt(c *gin.Context) {
+	clientID, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	receiptID, ok := pathID(c, "receiptID")
+	if !ok {
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	var receipt model.ClientReceipt
+	if err := tx.Where("tenant_id = ? AND id = ? AND client_id = ?", tenantID(c), receiptID, clientID).Take(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Where("tenant_id = ? AND client_id = ? AND reversal_of_id = ?", tenantID(c), clientID, receiptID).Delete(&model.ClientReceipt{}).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Delete(&receipt).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.Status(204)
+}
+
 func (a *API) clientLedger(c *gin.Context) {
 	clientID, ok := pathID(c, "id")
 	if !ok {
