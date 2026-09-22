@@ -273,7 +273,7 @@ func (a *API) saveClient(c *gin.Context, create bool) {
 		return
 	}
 	u := actor(c)
-	v := model.Client{TenantID: tenantID(c), Active: true}
+	v := model.Client{TenantID: tenantID(c), Active: true, OpeningBalanceType: "receivable"}
 	var id uint64
 	if !create {
 		var ok bool
