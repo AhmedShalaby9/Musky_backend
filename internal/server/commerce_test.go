@@ -185,6 +185,28 @@ func TestMySQLCommerce(t *testing.T) {
 			t.Fatal("deleted receipt still visible in ledger", ledger)
 		}
 	}
+	payableClient := call("POST", p+"/clients", a, `{"name":"Payable Client","opening_balance_minor":4530000,"opening_balance_type":"payable"}`, 201)
+	payableID := int(payableClient["id"].(float64))
+	payment := call("POST", fmt.Sprintf("%s/clients/%d/receipts", p, payableID), a, `{"amount_minor":500000,"method":"cash","direction":"out"}`, 201)
+	if payment["balance_minor"] != float64(-4030000) {
+		t.Fatal("client payment did not reduce payable balance", payment)
+	}
+	ledger = call("GET", fmt.Sprintf("%s/clients/%d/ledger", p, payableID), a, "", 200)
+	if ledger["client"].(map[string]any)["balance_minor"] != float64(-4030000) {
+		t.Fatal("payable ledger returned wrong client balance", ledger)
+	}
+	payableEntries := ledger["entries"].([]any)
+	if len(payableEntries) != 2 {
+		t.Fatal("payable ledger should contain opening and payment rows", ledger)
+	}
+	opening := payableEntries[0].(map[string]any)
+	clientPayment := payableEntries[1].(map[string]any)
+	if opening["kind"] != "opening" || opening["delta_minor"] != float64(-4530000) || opening["running_balance"] != float64(-4530000) {
+		t.Fatal("payable opening balance should be negative in ledger", ledger)
+	}
+	if clientPayment["kind"] != "client_payment" || clientPayment["delta_minor"] != float64(500000) || clientPayment["running_balance"] != float64(-4030000) {
+		t.Fatal("payable client payment should move running balance toward zero", ledger)
+	}
 	statement := raw("GET", fmt.Sprintf("%s/clients/%d/statement.pdf?from=2026-09-01&to=2026-09-30", p, cid), a, "")
 	if statement.Code != 200 || !strings.HasPrefix(statement.Header().Get("Content-Type"), "application/pdf") || !strings.HasPrefix(statement.Body.String(), "%PDF") {
 		sample := statement.Body.String()
