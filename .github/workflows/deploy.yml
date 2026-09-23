@@ -47,8 +47,8 @@ jobs:
             systemctl reset-failed musky || true
             systemctl start musky
             for i in $(seq 1 10); do
-              if systemctl is-active --quiet musky; then
-                echo "musky is active"
+              if systemctl is-active --quiet musky && curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+                echo "musky is active and healthy"
                 exit 0
               fi
               sleep 1

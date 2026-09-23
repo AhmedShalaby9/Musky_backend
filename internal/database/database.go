@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"github.com/go-sql-driver/mysql"
 	"strings"
@@ -95,6 +96,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 				continue
 			}
 			if _, err = conn.ExecContext(ctx, statement); err != nil {
+				if isRestartableMigrationError(err) {
+					continue
+				}
 				return fmt.Errorf("migration %s: %w", file.Name(), err)
 			}
 		}
@@ -103,4 +107,21 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func isRestartableMigrationError(err error) bool {
+	var me *mysql.MySQLError
+	if !errors.As(err, &me) {
+		return false
+	}
+	switch me.Number {
+	case 1060, // duplicate column
+		1061, // duplicate key name
+		1091, // cannot drop missing key/check
+		1826, // duplicate foreign key constraint name
+		3822: // duplicate check constraint name
+		return true
+	default:
+		return false
+	}
 }
