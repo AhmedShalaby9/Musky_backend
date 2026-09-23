@@ -80,6 +80,29 @@ func (a *API) listInvoices(c *gin.Context) {
 		}
 		query = query.Where("document_type = ?", documentType)
 	}
+	if q := strings.TrimSpace(c.Query("q")); q != "" {
+		if !validText(q, 1, 150) {
+			fail(c, 400, "invalid invoice search")
+			return
+		}
+		query = query.Where("client_name LIKE ?", "%"+q+"%")
+	}
+	if from := strings.TrimSpace(c.Query("from")); from != "" {
+		date, err := time.Parse("2006-01-02", from)
+		if err != nil || date.Year() < 1000 {
+			fail(c, 400, "from must be YYYY-MM-DD")
+			return
+		}
+		query = query.Where("issue_date >= ?", from)
+	}
+	if to := strings.TrimSpace(c.Query("to")); to != "" {
+		date, err := time.Parse("2006-01-02", to)
+		if err != nil || date.Year() < 1000 {
+			fail(c, 400, "to must be YYYY-MM-DD")
+			return
+		}
+		query = query.Where("issue_date <= ?", to)
+	}
 
 	data := []model.Invoice{}
 	if err := query.Order("id DESC").Limit(limit).Offset(offset).Find(&data).Error; err != nil {
