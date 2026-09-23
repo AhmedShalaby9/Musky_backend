@@ -33,15 +33,29 @@ func readInvoice(ctx context.Context, tx *gorm.DB, tenant, id uint64, lock bool)
 	if err := tx.Model(&paymentRecord{}).Where("tenant_id = ? AND invoice_id = ?", tenant, id).Order("paid_at,id").Scan(&v.Payments).Error; err != nil {
 		return v, err
 	}
+	v.Returns = []model.InvoiceReturn{}
+	if err := tx.Model(&invoiceReturnRecord{}).Where("tenant_id = ? AND invoice_id = ?", tenant, id).Order("created_at,id").Scan(&v.Returns).Error; err != nil {
+		return v, err
+	}
+	for i := range v.Returns {
+		v.Returns[i].Items = []model.InvoiceReturnItem{}
+		if err := tx.Model(&invoiceReturnItemRecord{}).Where("tenant_id = ? AND return_id = ?", tenant, v.Returns[i].ID).Order("id").Scan(&v.Returns[i].Items).Error; err != nil {
+			return v, err
+		}
+		v.ReturnedMinor += v.Returns[i].AmountMinor
+	}
 	for _, payment := range v.Payments {
 		v.PaidMinor += payment.AmountMinor
 	}
-	v.RemainingMinor = v.TotalMinor - v.PaidMinor
+	v.RemainingMinor = v.TotalMinor - v.ReturnedMinor - v.PaidMinor
+	if v.RemainingMinor < 0 {
+		v.RemainingMinor = 0
+	}
 	v.PaymentStatus = "unpaid"
 	if v.PaidMinor > 0 {
 		v.PaymentStatus = "partially_paid"
 	}
-	if v.RemainingMinor == 0 && v.TotalMinor > 0 {
+	if v.RemainingMinor == 0 && v.TotalMinor-v.ReturnedMinor > 0 {
 		v.PaymentStatus = "paid"
 	}
 	return v, nil
@@ -276,6 +290,39 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 func (a *API) postInvoice(c *gin.Context)   { a.transitionInvoice(c, "posted") }
 func (a *API) voidInvoice(c *gin.Context)   { a.transitionInvoice(c, "void") }
 func (a *API) cancelInvoice(c *gin.Context) { a.transitionInvoice(c, "cancelled") }
+func (a *API) deleteCancelledInvoice(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	var invoice model.Invoice
+	if err := tx.Model(&model.Invoice{}).Select("status").Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Take(&invoice).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if invoice.Status != "cancelled" {
+		fail(c, 409, "only cancelled invoices can be permanently deleted")
+		return
+	}
+	if err := tx.Where("tenant_id = ? AND invoice_id = ?", tenantID(c), id).Delete(&invoiceItemRecord{}).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Where("tenant_id = ? AND id = ? AND status = 'cancelled'", tenantID(c), id).Delete(&model.Invoice{}).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.Status(204)
+}
 func (a *API) reactivateInvoice(c *gin.Context) {
 	id, ok := pathID(c, "id")
 	if !ok {
@@ -554,6 +601,156 @@ type paymentInput struct {
 	Notes       string `json:"notes"`
 }
 
+type returnItemInput struct {
+	ProductID    uint64 `json:"product_id"`
+	PackageCount int64  `json:"package_count"`
+}
+
+type returnInput struct {
+	Reason string            `json:"reason"`
+	Items  []returnItemInput `json:"items"`
+}
+
+func returnedQuantities(tx *gorm.DB, tenant, invoiceID uint64) (map[uint64]int64, error) {
+	rows := []struct {
+		ProductID uint64
+		Quantity  int64
+	}{}
+	if err := tx.Model(&invoiceReturnItemRecord{}).Select("product_id, COALESCE(SUM(package_count),0) AS quantity").Where("tenant_id = ? AND invoice_id = ?", tenant, invoiceID).Group("product_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := map[uint64]int64{}
+	for _, row := range rows {
+		out[row.ProductID] = row.Quantity
+	}
+	return out, nil
+}
+
+func (a *API) createInvoiceReturn(c *gin.Context) {
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	var in returnInput
+	if !decode(c, &in) {
+		return
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if len(in.Items) < 1 || len(in.Items) > 100 || !validText(in.Reason, 0, 500) {
+		fail(c, 400, "invalid return fields")
+		return
+	}
+	requested := map[uint64]int64{}
+	for _, item := range in.Items {
+		if item.ProductID == 0 || item.PackageCount < 1 || item.PackageCount > maxQuantity {
+			fail(c, 400, "invalid return item")
+			return
+		}
+		requested[item.ProductID] += item.PackageCount
+		if requested[item.ProductID] > maxQuantity {
+			fail(c, 400, "invalid return item quantity")
+			return
+		}
+	}
+	tx, ok := a.commerceTx(c)
+	if !ok {
+		return
+	}
+	defer tx.Rollback()
+	v, err := readInvoice(c.Request.Context(), tx, tenantID(c), id, true)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if v.Status != "posted" || v.DocumentType != "sale" {
+		fail(c, 409, "returns can only be created for posted sale invoices")
+		return
+	}
+	alreadyReturned, err := returnedQuantities(tx, tenantID(c), id)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	itemsByProduct := map[uint64]model.InvoiceItem{}
+	for _, item := range v.Items {
+		itemsByProduct[item.ProductID] = item
+	}
+	returnRow := invoiceReturnRecord{InvoiceReturn: model.InvoiceReturn{TenantID: tenantID(c), InvoiceID: id, ClientID: v.ClientID, CreatedByUserID: actor(c).ID, Reason: in.Reason}}
+	returnItems := []invoiceReturnItemRecord{}
+	var total int64
+	for productID, packageCount := range requested {
+		item, exists := itemsByProduct[productID]
+		if !exists {
+			fail(c, 400, "returned product is not on this invoice")
+			return
+		}
+		remaining := item.PackageCount - alreadyReturned[productID]
+		if remaining <= 0 || packageCount > remaining {
+			fail(c, 409, "return quantity exceeds invoice remaining quantity")
+			return
+		}
+		quantity := packageCount
+		line, valid := lineTotal(item.UnitPriceMinor, item.UnitsPerPackage, packageCount)
+		if !valid || total > 100000000000000-line {
+			fail(c, 400, "invalid return total")
+			return
+		}
+		total += line
+		returnItems = append(returnItems, invoiceReturnItemRecord{
+			TenantID:  tenantID(c),
+			InvoiceID: id,
+			InvoiceReturnItem: model.InvoiceReturnItem{
+				ProductID: productID, Title: item.Title, Code: item.Code, PiecesPerUnit: item.PiecesPerUnit, Quantity: quantity,
+				UnitsPerPackage: item.UnitsPerPackage, PackageCount: packageCount, UnitPriceMinor: item.UnitPriceMinor, TotalMinor: line,
+			},
+		})
+	}
+	returnRow.AmountMinor = total
+	if err = tx.Create(&returnRow).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	returnID := returnRow.ID
+	for i := range returnItems {
+		returnItems[i].ReturnID = returnID
+		if err = tx.Create(&returnItems[i]).Error; err != nil {
+			databaseError(c, err)
+			return
+		}
+		var p model.Product
+		if err = tx.Select(productColumns).Clauses(clause.Locking{Strength: "UPDATE"}).Where("tenant_id = ? AND id = ?", tenantID(c), returnItems[i].ProductID).Take(&p).Error; err != nil {
+			databaseError(c, err)
+			return
+		}
+		if p.Quantity > maxQuantity-returnItems[i].InvoiceReturnItem.Quantity {
+			fail(c, 409, "stock limit would be exceeded by return")
+			return
+		}
+		if err = tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenantID(c), p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", returnItems[i].InvoiceReturnItem.Quantity), "version": gorm.Expr("version + 1")}).Error; err != nil {
+			databaseError(c, err)
+			return
+		}
+		if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, ReturnID: &returnID, CreatedByUserID: actor(c).ID, Kind: "return", QuantityDelta: returnItems[i].InvoiceReturnItem.Quantity}).Error; err != nil {
+			databaseError(c, err)
+			return
+		}
+	}
+	if err = tx.Create(&clientLedgerRecord{TenantID: tenantID(c), ClientID: v.ClientID, InvoiceID: id, ReturnID: &returnID, Kind: "return", AmountMinor: -total}).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	v, err = readInvoice(c.Request.Context(), tx, tenantID(c), id, false)
+	if err != nil {
+		databaseError(c, err)
+		return
+	}
+	if err = tx.Commit().Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	c.JSON(201, v)
+}
+
 func (a *API) createPayment(c *gin.Context) {
 	id, ok := pathID(c, "id")
 	if !ok {
@@ -576,7 +773,7 @@ func (a *API) createPayment(c *gin.Context) {
 	defer tx.Rollback()
 	var clientID uint64
 	var status string
-	var total, paid int64
+	var total, returned, paid int64
 	var invoiceRow struct {
 		ClientID   uint64
 		Status     string
@@ -597,7 +794,17 @@ func (a *API) createPayment(c *gin.Context) {
 		return
 	}
 	paid = paidRow.Paid
-	if paid > total-in.AmountMinor {
+	var returnRow struct{ Returned int64 }
+	if err := tx.Model(&invoiceReturnRecord{}).Select("COALESCE(SUM(amount_minor),0) AS returned").Where("tenant_id = ? AND invoice_id = ?", tenantID(c), id).Scan(&returnRow).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	returned = returnRow.Returned
+	due := total - returned
+	if due < 0 {
+		due = 0
+	}
+	if paid > due-in.AmountMinor {
 		fail(c, 409, "payment exceeds the invoice remaining balance")
 		return
 	}
@@ -612,5 +819,5 @@ func (a *API) createPayment(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	c.JSON(201, gin.H{"id": paymentID, "invoice_id": id, "client_id": clientID, "amount_minor": in.AmountMinor, "method": in.Method, "notes": in.Notes, "paid_minor": paid + in.AmountMinor, "remaining_minor": total - paid - in.AmountMinor})
+	c.JSON(201, gin.H{"id": paymentID, "invoice_id": id, "client_id": clientID, "amount_minor": in.AmountMinor, "method": in.Method, "notes": in.Notes, "paid_minor": paid + in.AmountMinor, "returned_minor": returned, "remaining_minor": due - paid - in.AmountMinor})
 }

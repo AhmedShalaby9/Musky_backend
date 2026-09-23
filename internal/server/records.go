@@ -53,6 +53,7 @@ type stockMovementRecord struct {
 	TenantID        uint64
 	ProductID       uint64
 	InvoiceID       *uint64
+	ReturnID        *uint64
 	CreatedByUserID uint64
 	Kind            string
 	QuantityDelta   int64
@@ -65,11 +66,28 @@ type clientLedgerRecord struct {
 	TenantID    uint64
 	ClientID    uint64
 	InvoiceID   uint64
+	ReturnID    *uint64
 	Kind        string
 	AmountMinor int64
 }
 
 func (clientLedgerRecord) TableName() string { return "client_ledger" }
+
+type invoiceReturnRecord struct {
+	model.InvoiceReturn `gorm:"embedded"`
+}
+
+func (invoiceReturnRecord) TableName() string { return "invoice_returns" }
+
+type invoiceReturnItemRecord struct {
+	ID                      uint64
+	TenantID                uint64
+	ReturnID                uint64
+	InvoiceID               uint64
+	model.InvoiceReturnItem `gorm:"embedded"`
+}
+
+func (invoiceReturnItemRecord) TableName() string { return "invoice_return_items" }
 
 type invoiceCounterRecord struct {
 	TenantID   uint64 `gorm:"primaryKey;autoIncrement:false"`

@@ -183,6 +183,8 @@ func statementDescription(entry model.LedgerEntry) string {
 		return invoiceDocumentTypeAr(entry.DocumentType) + number
 	case "void", "purchase_void":
 		return "إلغاء " + invoiceDocumentTypeAr(entry.DocumentType) + number
+	case "return":
+		return "مرتجع " + invoiceDocumentTypeAr(entry.DocumentType) + number
 	case "invoice_payment":
 		if entry.DocumentType == "purchase" {
 			return "دفعة للمورد" + number
