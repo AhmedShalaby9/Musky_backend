@@ -66,6 +66,18 @@ func (a *API) listInvoices(c *gin.Context) {
 		return
 	}
 	query := a.orm.WithContext(c.Request.Context()).Model(&model.Invoice{}).Select(invoiceColumns).Where("tenant_id = ?", tenantID(c))
+	if clientIDStr := c.Query("client_id"); clientIDStr != "" {
+		clientIDVal, err := strconv.ParseUint(clientIDStr, 10, 64)
+		if err != nil || clientIDVal == 0 {
+			fail(c, 400, "invalid client_id")
+			return
+		}
+		query = query.Where("client_id = ?", clientIDVal)
+		// Default to posted-only when filtering by client (client statement view)
+		if c.Query("status") == "" {
+			query = query.Where("status = 'posted'")
+		}
+	}
 	if status := c.Query("status"); status != "" {
 		if status != "draft" && status != "posted" && status != "void" && status != "cancelled" {
 			fail(c, 400, "invalid invoice status")
