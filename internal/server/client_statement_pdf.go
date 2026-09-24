@@ -273,6 +273,8 @@ func statementDescription(entry model.LedgerEntry) string {
 		return "إلغاء " + invoiceDocumentTypeAr(entry.DocumentType) + number
 	case "return":
 		return "مرتجع " + invoiceDocumentTypeAr(entry.DocumentType) + number
+	case "adjust", "purchase_adjust":
+		return "تعديل " + invoiceDocumentTypeAr(entry.DocumentType) + number
 	case "invoice_payment":
 		if entry.DocumentType == "purchase" {
 			return paymentDescription("مدفوعات فاتورة", entry)

@@ -81,3 +81,33 @@ func TestBuildClientStatementPDF(t *testing.T) {
 		}
 	}
 }
+
+func TestFoldInvoiceAdjustmentsIntoPosting(t *testing.T) {
+	at := time.Date(2026, 9, 23, 10, 0, 0, 0, time.UTC)
+	// Scan order puts "adjust" before "invoice" at the same timestamp.
+	entries := []model.LedgerEntry{
+		{Kind: "opening", DeltaMinor: 1000, At: at.Add(-time.Hour)},
+		{Kind: "adjust", RefID: ptr(uint64(1)), DeltaMinor: -681600, At: at},
+		{Kind: "invoice", RefID: ptr(uint64(1)), DeltaMinor: 4341600, At: at},
+		{Kind: "receipt", RefID: ptr(uint64(9)), DeltaMinor: -3000000, At: at.Add(time.Hour)},
+	}
+	got := foldInvoiceAdjustments(entries)
+	if len(got) != 3 || got[1].Kind != "invoice" || got[1].DeltaMinor != 3660000 || got[1].RunningBalance != 3661000 || got[2].RunningBalance != 661000 {
+		t.Fatal("adjustment must fold into its invoice", got)
+	}
+
+	// The statement then lists the edited invoice's current items.
+	_, items := sampleStatement()
+	items.invoices[1] = items.invoices[1][:3] // the 681600 line was removed by the edit
+	lines := statementLines(got[1:], items, 1000, at.Add(-time.Hour))
+	if len(lines) != 5 || !lines[3].HasItem || lines[3].Balance != 3661000 || lines[4].Balance != 661000 {
+		t.Fatal("edited invoice must expand into its current items", lines)
+	}
+}
+
+func TestFoldKeepsOrphanAdjustment(t *testing.T) {
+	got := foldInvoiceAdjustments([]model.LedgerEntry{{Kind: "adjust", RefID: ptr(uint64(5)), DeltaMinor: 300}})
+	if len(got) != 1 || got[0].RunningBalance != 300 {
+		t.Fatal("an adjustment without a posting must stay visible", got)
+	}
+}

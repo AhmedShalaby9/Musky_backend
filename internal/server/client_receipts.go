@@ -45,12 +45,7 @@ func loadClientLedger(ctx context.Context, db *gorm.DB, tenant, clientID uint64)
 	if err := tx.Table("(? UNION ALL ? UNION ALL ? UNION ALL ?) entries", opening, ledger, payments, receipts).Order("at,kind,ref_id").Scan(&entries).Error; err != nil {
 		return client, nil, err
 	}
-	var running int64
-	for i := range entries {
-		running += entries[i].DeltaMinor
-		entries[i].RunningBalance = running
-	}
-	return client, entries, nil
+	return client, foldInvoiceAdjustments(entries), nil
 }
 
 func (a *API) createClientReceipt(c *gin.Context) {

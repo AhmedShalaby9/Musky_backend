@@ -305,4 +305,50 @@ func TestMySQLCommerce(t *testing.T) {
 	if _, err = db.Exec("INSERT INTO invoice_items(tenant_id,invoice_id,product_id,title,code,pieces_per_unit,quantity,unit_price_minor,total_minor) VALUES (?,?,?,?,?,1,1,1,1)", 1, iid, fpid, "Bad", "Bad"); err == nil {
 		t.Fatal("cross-tenant foreign key missing")
 	}
+
+	// Posted invoices can be edited in place: stock and balance move by the difference.
+	editClient := call("POST", p+"/clients", a, `{"name":"Edit Client"}`, 201)
+	ecid := int(editClient["id"].(float64))
+	editProduct := call("POST", p+"/products", a, `{"title":"Coffee","code":"COF","quantity":20,"pieces_per_unit":10}`, 201)
+	epid := int(editProduct["id"].(float64))
+	editProductPath := fmt.Sprintf("%s/products/%d", p, epid)
+	editBody := func(qty, price int64, version int) string {
+		return fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","version":%d,"items":[{"product_id":%d,"units_per_package":10,"package_count":%d,"unit_price_minor":%d}]}`, ecid, version, epid, qty, price)
+	}
+	editInv := call("POST", p+"/invoices", a, editBody(5, 1000, 0), 201)
+	editPath := fmt.Sprintf("%s/invoices/%.0f", p, editInv["id"])
+	call("POST", editPath+"/post", a, `{"version":1}`, 200) // 5 packs x 10 x 10.00 = 500.00, stock 15
+	call("POST", editPath+"/payments", a, `{"amount_minor":10000,"method":"cash"}`, 201)
+	edited := call("PUT", editPath, a, editBody(3, 1200, 2), 200) // 3 x 10 x 12.00 = 360.00
+	if edited["status"] != "posted" || edited["total_minor"] != float64(36000) || edited["remaining_minor"] != float64(26000) {
+		t.Fatal("posted edit did not update the invoice", edited)
+	}
+	if q := call("GET", editProductPath, a, "", 200)["quantity"]; q != float64(17) {
+		t.Fatal("posted edit must return the removed packs to stock", q)
+	}
+	editLedger := call("GET", fmt.Sprintf("%s/clients/%d/ledger", p, ecid), a, "", 200)
+	if editLedger["client"].(map[string]any)["balance_minor"] != float64(26000) {
+		t.Fatal("posted edit did not adjust the client balance", editLedger)
+	}
+	for _, row := range editLedger["entries"].([]any) {
+		entry := row.(map[string]any)
+		if entry["kind"] == "adjust" {
+			t.Fatal("edit adjustment must be folded into the invoice row", editLedger)
+		}
+		if entry["kind"] == "invoice" && entry["delta_minor"] != float64(36000) {
+			t.Fatal("invoice row must show the edited total", entry)
+		}
+	}
+	call("PUT", editPath, a, editBody(30, 1200, 3), 409)                                                                                     // not enough stock
+	call("PUT", editPath, a, editBody(1, 500, 3), 409)                                                                                       // below the 100.00 already paid
+	call("PUT", editPath, a, strings.Replace(editBody(3, 1200, 3), `"client_id":`+fmt.Sprint(ecid), `"client_id":`+fmt.Sprint(cid), 1), 409) // client is fixed
+	call("POST", editPath+"/returns", a, fmt.Sprintf(`{"reason":"damaged","items":[{"product_id":%d,"package_count":2}]}`, epid), 201)
+	call("PUT", editPath, a, editBody(1, 1200, 3), 409) // below the 2 packs already returned
+	if q := call("GET", editProductPath, a, "", 200)["quantity"]; q != float64(19) {
+		t.Fatal("rejected edits must not move stock", q)
+	}
+	editStatement := raw("GET", fmt.Sprintf("%s/clients/%d/statement.pdf?from=2026-09-01&to=2026-12-31", p, ecid), a, "")
+	if editStatement.Code != 200 || !strings.HasPrefix(editStatement.Body.String(), "%PDF") {
+		t.Fatal("statement for an edited invoice failed", editStatement.Code)
+	}
 }

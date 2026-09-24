@@ -207,18 +207,25 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		return
 	}
 	defer tx.Rollback()
+	var existing model.Invoice
+	posted := false
 	if !create {
-		existing, err := readInvoice(c.Request.Context(), tx, tenantID(c), id, true)
+		existing, err = readInvoice(c.Request.Context(), tx, tenantID(c), id, true)
 		if err != nil {
 			databaseError(c, err)
 			return
 		}
-		if existing.Status != "draft" {
-			fail(c, 409, "only draft invoices can be edited")
+		if existing.Status != "draft" && existing.Status != "posted" {
+			fail(c, 409, "only draft or posted invoices can be edited")
 			return
 		}
 		if existing.Version != in.Version {
 			fail(c, 409, "invoice changed; refresh before saving")
+			return
+		}
+		posted = existing.Status == "posted"
+		if posted && (existing.ClientID != in.ClientID || existing.DocumentType != in.DocumentType) {
+			fail(c, 409, "لا يمكن تغيير العميل أو نوع الفاتورة بعد إصدارها")
 			return
 		}
 	}
@@ -256,7 +263,8 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 			databaseError(c, err)
 			return
 		}
-		if !p.Active {
+		// A posted invoice may keep a product that was archived after posting.
+		if !p.Active && !(posted && invoiceHasProduct(existing, p.ID)) {
 			fail(c, 409, "cannot invoice an archived product")
 			return
 		}
@@ -292,7 +300,19 @@ func (a *API) saveInvoice(c *gin.Context, create bool) {
 		}
 		id = row.ID
 	} else {
-		if err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"client_id": in.ClientID, "issue_date": in.IssueDate, "client_name": name, "client_address": address, "notes": in.Notes, "total_minor": total, "document_type": in.DocumentType, "version": gorm.Expr("version + 1")}).Error; err != nil {
+		if posted {
+			status, message, err := applyPostedInvoiceEdit(tx, tenantID(c), actor(c).ID, existing, items, total)
+			if err != nil {
+				databaseError(c, err)
+				return
+			}
+			if message != "" {
+				fail(c, status, message)
+				return
+			}
+		}
+		// The stored PDF shows the old lines, so drop it; the app offers to regenerate.
+		if err = tx.Model(&model.Invoice{}).Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"client_id": in.ClientID, "issue_date": in.IssueDate, "client_name": name, "client_address": address, "notes": in.Notes, "total_minor": total, "document_type": in.DocumentType, "pdf_url": "", "version": gorm.Expr("version + 1")}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}
