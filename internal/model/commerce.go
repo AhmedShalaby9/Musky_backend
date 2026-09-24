@@ -19,6 +19,7 @@ type ClientReceipt struct {
 type LedgerEntry struct {
 	Kind           string    `json:"kind"`
 	RefID          *uint64   `json:"ref_id"`
+	ReturnID       *uint64   `json:"-"`
 	InvoiceNumber  *int64    `json:"invoice_number"`
 	DocumentType   string    `json:"document_type,omitempty"`
 	DeltaMinor     int64     `json:"delta_minor"`
