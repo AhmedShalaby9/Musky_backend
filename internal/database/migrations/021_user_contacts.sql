@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS user_contacts (
+ id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+ tenant_id BIGINT UNSIGNED NOT NULL,
+ user_id BIGINT UNSIGNED NOT NULL,
+ title VARCHAR(60) NOT NULL,
+ value VARCHAR(160) NOT NULL,
+ visible_on_invoice BOOLEAN NOT NULL DEFAULT FALSE,
+ sort_order INT NOT NULL DEFAULT 0,
+ created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+ updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+ CONSTRAINT fk_user_contact_user FOREIGN KEY (tenant_id, user_id) REFERENCES users(tenant_id, id),
+ INDEX idx_user_contacts_lookup (tenant_id, user_id, sort_order)
+) ENGINE=InnoDB;

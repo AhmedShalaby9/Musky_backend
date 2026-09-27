@@ -42,15 +42,27 @@ func (a *API) invoicePDF(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	var logoKey string
 	var tenantRow struct {
+		Name      string
 		ObjectKey string
 	}
-	if err = tx.Table("tenants t").Select("COALESCE(f.object_key,'') AS object_key").Joins("LEFT JOIN file_objects f ON f.id=t.logo_file_id AND f.tenant_id=t.id").Where("t.id = ?", tenantID(c)).Scan(&tenantRow).Error; err != nil {
+	if err = tx.Table("tenants t").Select("t.name, COALESCE(f.object_key,'') AS object_key").Joins("LEFT JOIN file_objects f ON f.id=t.logo_file_id AND f.tenant_id=t.id").Where("t.id = ?", tenantID(c)).Scan(&tenantRow).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
-	logoKey = tenantRow.ObjectKey
+	logoKey := tenantRow.ObjectKey
+	var creator struct{ Name string }
+	if err = tx.Table("users").Select("name").Where("tenant_id = ? AND id = ?", tenantID(c), invoice.CreatedByUserID).Scan(&creator).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
+	var contacts []struct{ Title, Value string }
+	if err = tx.Table("user_contacts").Select("title, value").
+		Where("tenant_id = ? AND user_id = ? AND visible_on_invoice = TRUE", tenantID(c), invoice.CreatedByUserID).
+		Order("sort_order, id").Scan(&contacts).Error; err != nil {
+		databaseError(c, err)
+		return
+	}
 	if err = tx.Commit().Error; err != nil {
 		databaseError(c, err)
 		return
@@ -68,16 +80,18 @@ func (a *API) invoicePDF(c *gin.Context) {
 	pdf.AddPage()
 	pdf.SetFont(font, "B", 20)
 	pdf.SetTextColor(15, 79, 79)
-	pdf.CellFormat(0, 10, arabic("شركة بكار لاين"), "", 1, "R", false, 0, "")
-	pdf.SetFont(font, "", 12)
-	pdf.CellFormat(0, 8, arabic("للاستيراد والتصدير"), "", 1, "R", false, 0, "")
+	if tenantRow.Name != "" {
+		pdf.CellFormat(0, 10, arabic(tenantRow.Name), "", 1, "R", false, 0, "")
+	}
 	pdf.SetFont(font, "B", 22)
 	pdf.CellFormat(0, 13, arabic(invoiceDocumentTypeAr(invoice.DocumentType)), "", 1, "R", false, 0, "")
 	pdf.SetFont(font, "", 10)
-	pdf.CellFormat(90, 7, arabic("محمد بكري"), "", 0, "L", false, 0, "")
-	pdf.CellFormat(90, 7, arabic("01284550533"), "", 1, "L", false, 0, "")
-	pdf.CellFormat(90, 7, arabic("أحمد عماد"), "", 0, "L", false, 0, "")
-	pdf.CellFormat(90, 7, arabic("01229722960"), "", 1, "L", false, 0, "")
+	if creator.Name != "" {
+		pdf.CellFormat(0, 7, arabic(creator.Name), "", 1, "L", false, 0, "")
+	}
+	for _, ct := range contacts {
+		pdf.CellFormat(0, 6, arabic(fmt.Sprintf("%s: %s", ct.Title, ct.Value)), "", 1, "L", false, 0, "")
+	}
 	pdf.SetFont(font, "", 11)
 	pdf.SetTextColor(30, 50, 60)
 	number := arabic("مسودة")

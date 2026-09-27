@@ -29,6 +29,20 @@ type User struct {
 	CreatedAt    time.Time `json:"created_at"`
 }
 
+// UserContact is a printable contact line (e.g. "Instapay: 0102223232") a
+// user adds for themselves. VisibleOnInvoice is set only by a super admin;
+// only contacts with it true are printed on invoices that user creates.
+type UserContact struct {
+	ID               uint64    `json:"id"`
+	TenantID         uint64    `json:"tenant_id"`
+	UserID           uint64    `json:"user_id"`
+	Title            string    `json:"title"`
+	Value            string    `json:"value"`
+	VisibleOnInvoice bool      `json:"visible_on_invoice"`
+	SortOrder        int       `json:"sort_order"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
 // Clients are business contacts, never login accounts.
 type Client struct {
 	ID                  uint64  `json:"id"`

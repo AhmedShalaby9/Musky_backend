@@ -66,6 +66,11 @@ func (a *API) listInvoices(c *gin.Context) {
 		return
 	}
 	query := a.orm.WithContext(c.Request.Context()).Model(&model.Invoice{}).Select(invoiceColumns).Where("tenant_id = ?", tenantID(c))
+	// Trader owners never see cancelled drafts in listings, even if they ask
+	// for them explicitly; supporting admins and the super admin still do.
+	if actor(c).Role == model.Trader {
+		query = query.Where("status <> 'cancelled'")
+	}
 	if clientIDStr := c.Query("client_id"); clientIDStr != "" {
 		clientIDVal, err := strconv.ParseUint(clientIDStr, 10, 64)
 		if err != nil || clientIDVal == 0 {
