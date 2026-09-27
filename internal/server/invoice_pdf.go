@@ -22,6 +22,13 @@ import (
 //go:embed fonts/DejaVuSansCondensed.ttf
 var invoiceFont []byte
 
+// invoiceContactLine is one of a trader's printable contact rows (see
+// user_contacts.go), already filtered to visible_on_invoice = true.
+type invoiceContactLine struct {
+	Title string
+	Value string
+}
+
 func (a *API) invoicePDF(c *gin.Context) {
 	if a.files == nil {
 		fail(c, 503, "file storage is not configured")
@@ -56,7 +63,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	var contacts []struct{ Title, Value string }
+	var contacts []invoiceContactLine
 	if err = tx.Table("user_contacts").Select("title, value").
 		Where("tenant_id = ? AND user_id = ? AND visible_on_invoice = TRUE", tenantID(c), invoice.CreatedByUserID).
 		Order("sort_order, id").Scan(&contacts).Error; err != nil {
@@ -67,93 +74,21 @@ func (a *API) invoicePDF(c *gin.Context) {
 		databaseError(c, err)
 		return
 	}
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	fontPath := os.Getenv("MUSKY_PDF_FONT_PATH")
-	font := "musky"
-	if fontPath != "" {
-		pdf.AddUTF8Font("musky", "", fontPath)
-		pdf.AddUTF8Font("musky", "B", fontPath)
-	} else {
-		pdf.AddUTF8FontFromBytes("musky", "", invoiceFont)
-		pdf.AddUTF8FontFromBytes("musky", "B", invoiceFont)
-	}
-	pdf.AddPage()
-	pdf.SetFont(font, "B", 20)
-	pdf.SetTextColor(15, 79, 79)
-	if tenantRow.Name != "" {
-		pdf.CellFormat(0, 10, arabic(tenantRow.Name), "", 1, "R", false, 0, "")
-	}
-	pdf.SetFont(font, "B", 22)
-	pdf.CellFormat(0, 13, arabic(invoiceDocumentTypeAr(invoice.DocumentType)), "", 1, "R", false, 0, "")
-	pdf.SetFont(font, "", 10)
-	if creator.Name != "" {
-		pdf.CellFormat(0, 7, arabic(creator.Name), "", 1, "L", false, 0, "")
-	}
-	for _, ct := range contacts {
-		pdf.CellFormat(0, 6, arabic(fmt.Sprintf("%s: %s", ct.Title, ct.Value)), "", 1, "L", false, 0, "")
-	}
-	pdf.SetFont(font, "", 11)
-	pdf.SetTextColor(30, 50, 60)
-	number := arabic("مسودة")
-	if invoice.Number != nil {
-		number = fmt.Sprintf("%06d", *invoice.Number)
-	}
-	pdf.CellFormat(45, 7, number, "", 0, "L", false, 0, "")
-	pdf.CellFormat(45, 7, arabic("رقم"), "", 0, "R", false, 0, "")
-	pdf.CellFormat(45, 7, formatInvoiceDate(invoice.IssueDate), "", 0, "L", false, 0, "")
-	pdf.CellFormat(45, 7, arabic("تحريراً في"), "", 1, "R", false, 0, "")
-	pdf.Ln(5)
-	pdf.SetFont(font, "", 11)
-	pdf.CellFormat(135, 8, arabic(truncatePDF(invoice.ClientName, 55)), "", 0, "L", false, 0, "")
-	pdf.CellFormat(45, 8, arabic("السيد"), "", 1, "R", false, 0, "")
-	if invoice.ClientAddress != "" {
-		pdf.CellFormat(135, 8, arabic(truncatePDF(invoice.ClientAddress, 70)), "", 0, "L", false, 0, "")
-		pdf.CellFormat(45, 8, arabic("العنوان"), "", 1, "R", false, 0, "")
-	}
-	pdf.Ln(5)
-	pdf.SetFillColor(15, 79, 79)
-	pdf.SetTextColor(255, 255, 255)
-	pdf.SetFont(font, "B", 10)
-	for _, h := range []string{arabic("الإجمالي"), arabic("العدد"), arabic("العبوة"), arabic("سعر الوحدة"), arabic("بيان")} {
-		pdf.CellFormat(38, 9, h, "1", 0, "C", true, 0, "")
-	}
-	pdf.Ln(-1)
-	pdf.SetTextColor(30, 50, 60)
-	pdf.SetFont(font, "", 10)
-	for _, item := range invoice.Items {
-		pdf.CellFormat(38, 9, moneyPDF(item.TotalMinor), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(38, 9, fmt.Sprint(item.PackageCount), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(38, 9, fmt.Sprint(item.UnitsPerPackage), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(38, 9, moneyPDF(item.UnitPriceMinor), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(38, 9, arabic(truncatePDF(item.Title, 24)), "1", 1, "R", false, 0, "")
-	}
-	pdf.Ln(6)
-	pdf.SetFont(font, "B", 13)
-	pdf.CellFormat(100, 9, moneyPDF(invoice.TotalMinor), "", 0, "L", false, 0, "")
-	pdf.CellFormat(20, 9, arabic("جنيه"), "", 0, "L", false, 0, "")
-	pdf.CellFormat(60, 9, arabic("الإجمالي فقط وقدره"), "", 1, "R", false, 0, "")
-	if invoice.PaymentStatus != "" {
-		pdf.SetFont(font, "", 11)
-		pdf.CellFormat(100, 8, moneyPDF(invoice.PaidMinor), "", 0, "L", false, 0, "")
-		pdf.CellFormat(20, 8, arabic("جنيه"), "", 0, "L", false, 0, "")
-		pdf.CellFormat(60, 8, arabic("المدفوع / المتبقي"), "", 1, "R", false, 0, "")
-		pdf.CellFormat(100, 8, moneyPDF(invoice.RemainingMinor), "", 0, "L", false, 0, "")
-		pdf.CellFormat(20, 8, arabic("جنيه"), "", 0, "L", false, 0, "")
-		pdf.CellFormat(60, 8, arabic(paymentStatusAr(invoice.PaymentStatus)), "", 1, "R", false, 0, "")
-	}
+	var logoData []byte
+	var logoExt string
 	if logoKey != "" {
 		if rc, e := a.files.Get(c.Request.Context(), logoKey); e == nil {
 			defer rc.Close()
 			if data, e := io.ReadAll(rc); e == nil {
-				ext := strings.TrimPrefix(filepath.Ext(logoKey), ".")
-				if ext == "jpg" {
-					ext = "jpeg"
+				logoData = data
+				logoExt = strings.TrimPrefix(filepath.Ext(logoKey), ".")
+				if logoExt == "jpg" {
+					logoExt = "jpeg"
 				}
-				pdf.RegisterImageOptionsReader("logo", gofpdf.ImageOptions{ImageType: ext}, bytes.NewReader(data))
-				pdf.ImageOptions("logo", 15, 15, 28, 0, false, gofpdf.ImageOptions{ImageType: ext}, 0, "")
 			}
 		}
 	}
+	pdf := buildInvoicePDF(invoice, tenantRow.Name, creator.Name, contacts, logoData, logoExt)
 	var out bytes.Buffer
 	if err = pdf.Output(&out); err != nil {
 		fail(c, 500, "could not generate invoice PDF")
@@ -182,6 +117,153 @@ func (a *API) invoicePDF(c *gin.Context) {
 	c.JSON(201, gin.H{"invoice_id": id, "url": url, "key": key})
 }
 
+// buildInvoicePDF renders one invoice as a boxed, RTL-styled A4 page: a
+// header naming the trader who created it (with their approved contact
+// lines), a boxed document type/number line, a bordered info grid, a
+// bordered items table and boxed totals. It touches no database or file
+// storage, so it is easy to unit test and reuse.
+func buildInvoicePDF(invoice model.Invoice, tenantName, creatorName string, contacts []invoiceContactLine, logoData []byte, logoExt string) *gofpdf.Fpdf {
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	fontPath := os.Getenv("MUSKY_PDF_FONT_PATH")
+	font := "musky"
+	if fontPath != "" {
+		pdf.AddUTF8Font("musky", "", fontPath)
+		pdf.AddUTF8Font("musky", "B", fontPath)
+	} else {
+		pdf.AddUTF8FontFromBytes("musky", "", invoiceFont)
+		pdf.AddUTF8FontFromBytes("musky", "B", invoiceFont)
+	}
+	pdf.AddPage()
+	left, top, right, _ := pdf.GetMargins()
+	pageW, _ := pdf.GetPageSize()
+	contentWidth := pageW - left - right
+	half := contentWidth / 2
+
+	// gridRow draws a bordered two-column row. `rightText` is what an Arabic
+	// reader sees first (rightmost); gofpdf lays cells out left-to-right, so
+	// the right-hand field is emitted last to land on the right.
+	gridRow := func(rightText, leftText string) {
+		pdf.CellFormat(half, 8, arabic(truncatePDF(leftText, 42)), "1", 0, "R", false, 0, "")
+		pdf.CellFormat(half, 8, arabic(truncatePDF(rightText, 42)), "1", 1, "R", false, 0, "")
+	}
+
+	if len(logoData) > 0 {
+		pdf.RegisterImageOptionsReader("logo", gofpdf.ImageOptions{ImageType: logoExt}, bytes.NewReader(logoData))
+		pdf.ImageOptions("logo", left, top, 28, 0, false, gofpdf.ImageOptions{ImageType: logoExt}, 0, "")
+	}
+
+	// Header: the trader who created this invoice, their business, and their
+	// approved contact lines. Right-aligned across the full content width so
+	// it never overlaps the logo, which sits in the top-left corner.
+	heading := strings.TrimSpace(creatorName)
+	if tenantName != "" {
+		if heading == "" {
+			heading = tenantName
+		} else {
+			heading = heading + " - " + tenantName
+		}
+	}
+	pdf.SetFont(font, "B", 18)
+	pdf.SetTextColor(15, 79, 79)
+	if heading != "" {
+		pdf.CellFormat(0, 9, arabic(truncatePDF(heading, 60)), "", 1, "R", false, 0, "")
+	}
+	if len(contacts) > 0 {
+		pdf.SetFont(font, "", 10)
+		pdf.SetTextColor(60, 78, 74)
+		for _, ct := range contacts {
+			pdf.CellFormat(
+				0, 6,
+				arabic(fmt.Sprintf("%s: %s", ct.Title, ct.Value)),
+				"", 1, "R", false, 0, "",
+			)
+		}
+	}
+	pdf.Ln(4)
+
+	// Boxed document type + number line.
+	number := "مسودة"
+	if invoice.Number != nil {
+		number = fmt.Sprintf("%06d", *invoice.Number)
+	}
+	pdf.SetFont(font, "B", 14)
+	pdf.SetTextColor(15, 79, 79)
+	pdf.CellFormat(
+		contentWidth, 11,
+		arabic(fmt.Sprintf("%s رقم: %s", invoiceDocumentTypeAr(invoice.DocumentType), number)),
+		"1", 1, "C", false, 0, "",
+	)
+	pdf.Ln(4)
+
+	// Bordered info grid: type/date, client/status, address/notes.
+	pdf.SetFont(font, "", 10)
+	pdf.SetTextColor(30, 50, 60)
+	gridRow(
+		"النوع: "+invoiceTypeShortAr(invoice.DocumentType),
+		"التاريخ: "+formatInvoiceDate(invoice.IssueDate),
+	)
+	gridRow(
+		"السيد: "+invoice.ClientName,
+		"حالة الفاتورة: "+invoiceStatusAr(invoice.Status),
+	)
+	if invoice.ClientAddress != "" || invoice.Notes != "" {
+		gridRow("العنوان: "+invoice.ClientAddress, "ملاحظات: "+invoice.Notes)
+	}
+	pdf.Ln(4)
+
+	// Items table, columns in RTL reading order (description first and
+	// rightmost, total last and leftmost); emitted in reverse since gofpdf
+	// lays cells out left-to-right.
+	colWidths := []float64{
+		contentWidth * 0.14, // الإجمالي
+		contentWidth * 0.12, // العدد
+		contentWidth * 0.16, // سعر الوحدة
+		contentWidth * 0.12, // العبوة
+		contentWidth * 0.16, // الكود
+		contentWidth * 0.30, // بيان
+	}
+	pdf.SetFillColor(15, 79, 79)
+	pdf.SetTextColor(255, 255, 255)
+	pdf.SetFont(font, "B", 10)
+	for i, h := range []string{"الإجمالي", "العدد", "سعر الوحدة", "العبوة", "الكود", "بيان"} {
+		pdf.CellFormat(colWidths[i], 9, arabic(h), "1", 0, "C", true, 0, "")
+	}
+	pdf.Ln(-1)
+	pdf.SetTextColor(30, 50, 60)
+	pdf.SetFont(font, "", 10)
+	for _, item := range invoice.Items {
+		pdf.CellFormat(colWidths[0], 9, moneyPDF(item.TotalMinor), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[1], 9, fmt.Sprint(item.PackageCount), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[2], 9, moneyPDF(item.UnitPriceMinor), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[3], 9, fmt.Sprint(item.UnitsPerPackage), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[4], 9, arabic(truncatePDF(item.Code, 14)), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[5], 9, arabic(truncatePDF(item.Title, 22)), "1", 1, "R", false, 0, "")
+	}
+	pdf.Ln(6)
+
+	// Boxed totals.
+	pdf.SetFont(font, "B", 12)
+	pdf.SetTextColor(30, 50, 60)
+	pdf.CellFormat(
+		contentWidth, 9,
+		arabic(fmt.Sprintf("الإجمالي فقط وقدره: %s جنيه", moneyPDF(invoice.TotalMinor))),
+		"1", 1, "R", false, 0, "",
+	)
+	if invoice.PaymentStatus != "" {
+		pdf.SetFont(font, "", 10)
+		gridRow(
+			fmt.Sprintf("المدفوع: %s جنيه", moneyPDF(invoice.PaidMinor)),
+			fmt.Sprintf("المتبقي: %s جنيه", moneyPDF(invoice.RemainingMinor)),
+		)
+		pdf.CellFormat(
+			contentWidth, 8,
+			arabic("حالة السداد: "+paymentStatusAr(invoice.PaymentStatus)),
+			"1", 1, "R", false, 0, "",
+		)
+	}
+	return pdf
+}
+
 func arabic(s string) string { return rtl.Shape(s) }
 
 func invoiceDocumentTypeAr(documentType string) string {
@@ -189,6 +271,26 @@ func invoiceDocumentTypeAr(documentType string) string {
 		return "فاتورة شراء"
 	}
 	return "فاتورة بيع"
+}
+
+func invoiceTypeShortAr(documentType string) string {
+	if documentType == "purchase" {
+		return "شراء"
+	}
+	return "بيع"
+}
+
+func invoiceStatusAr(status string) string {
+	switch status {
+	case "posted":
+		return "مرحّلة"
+	case "void":
+		return "باطلة"
+	case "cancelled":
+		return "ملغاة"
+	default:
+		return "مسودة"
+	}
 }
 
 func truncatePDF(value string, max int) string {
