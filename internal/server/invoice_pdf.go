@@ -253,7 +253,7 @@ func buildInvoicePDF(invoice model.Invoice, tenantName, creatorName string, cont
 	if invoice.PaymentStatus != "" {
 		pdf.SetFont(font, "", 10)
 		gridRow(
-			fmt.Sprintf(moneyPDF(invoice.PaidMinor), "المدفوع: %s جنيه"),
+			fmt.Sprintf("المدفوع: %s جنيه", moneyPDF(invoice.PaidMinor)),
 			fmt.Sprintf("المتبقي: %s جنيه", moneyPDF(invoice.RemainingMinor)),
 		)
 		pdf.CellFormat(
