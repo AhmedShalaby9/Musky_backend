@@ -5,14 +5,15 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 	"io"
 	"musky/backend/internal/model"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gvanbeck/nautilus/pdf/rtl"
@@ -252,7 +253,7 @@ func buildInvoicePDF(invoice model.Invoice, tenantName, creatorName string, cont
 	if invoice.PaymentStatus != "" {
 		pdf.SetFont(font, "", 10)
 		gridRow(
-			fmt.Sprintf("المدفوع: %s جنيه", moneyPDF(invoice.PaidMinor)),
+			fmt.Sprintf(moneyPDF(invoice.PaidMinor), "المدفوع: %s جنيه"),
 			fmt.Sprintf("المتبقي: %s جنيه", moneyPDF(invoice.RemainingMinor)),
 		)
 		pdf.CellFormat(
