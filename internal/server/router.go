@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,12 +10,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"musky/backend/internal/database"
+	"musky/backend/internal/documents"
 	"musky/backend/internal/model"
 	"musky/backend/internal/storage"
 )
@@ -23,6 +26,33 @@ type API struct {
 	orm     *gorm.DB
 	files   *storage.R2
 	limiter *loginLimiter
+
+	// docs is the shared headless-Chromium PDF renderer used by invoicePDF.
+	// It is started eagerly in New so a broken/missing Chromium install is
+	// visible in the server logs at startup; if that eager start fails,
+	// documentRenderer retries exactly once, lazily, on first use (see
+	// docs/pdf-rendering-migration.md for the Contabo/MUSKY_CHROME_PATH
+	// requirements).
+	docs     *documents.Renderer
+	docsOnce sync.Once
+	docsErr  error
+}
+
+// documentRenderer returns the shared PDF renderer, retrying startup once
+// if the eager attempt in New failed (e.g. Chromium was not yet installed
+// when the process started). It never spawns more than one Chromium
+// instance for the process lifetime.
+func (a *API) documentRenderer() (*documents.Renderer, error) {
+	if a.docs != nil {
+		return a.docs, nil
+	}
+	a.docsOnce.Do(func() {
+		a.docs, a.docsErr = documents.NewRenderer(context.Background())
+	})
+	if a.docsErr != nil {
+		return nil, a.docsErr
+	}
+	return a.docs, nil
 }
 
 func New(db *sql.DB) *gin.Engine {
@@ -32,6 +62,11 @@ func New(db *sql.DB) *gin.Engine {
 		panic("could not initialize GORM: " + err.Error())
 	}
 	a := &API{orm: orm, files: files, limiter: newLoginLimiter()}
+	if renderer, err := documents.NewRenderer(context.Background()); err != nil {
+		log.Printf("PDF renderer: headless Chromium unavailable at startup (%v); invoice PDF generation will retry Chromium startup on first request", err)
+	} else {
+		a.docs = renderer
+	}
 	r := gin.New()
 	r.Use(gin.Recovery())
 	_ = r.SetTrustedProxies(nil)

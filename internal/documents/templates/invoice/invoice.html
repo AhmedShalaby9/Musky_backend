@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>Invoice</title>
+<style>{{.CSS}}</style>
+</head>
+<body>
+  <header class="doc-header">
+    {{if .LogoDataURI}}<img class="logo" src="{{.LogoDataURI}}" alt="">{{end}}
+    <div class="identity">
+      {{if .TraderName}}
+        <div class="heading">{{if .TenantName}}{{.TraderName}} - {{.TenantName}}{{else}}{{.TraderName}}{{end}}</div>
+      {{else if .TenantName}}
+        <div class="heading">{{.TenantName}}</div>
+      {{end}}
+      {{range .Contacts}}
+        <div class="contact-line">{{.Title}}: <span dir="ltr">{{.Value}}</span></div>
+      {{end}}
+    </div>
+  </header>
+
+  <div class="title-bar">{{.DocumentTypeLabel}} رقم: <span dir="ltr">{{.Number}}</span></div>
+
+  <div class="info-grid">
+    <div class="info-cell"><span class="label">النوع:</span>{{.DocumentTypeShort}}</div>
+    <div class="info-cell"><span class="label">التاريخ:</span><span dir="ltr">{{.IssueDate}}</span></div>
+    <div class="info-cell"><span class="label">السيد:</span>{{.ClientName}}</div>
+    <div class="info-cell"><span class="label">حالة الفاتورة:</span>{{.StatusLabel}}</div>
+    {{if or .ClientAddress .Notes}}
+      <div class="info-cell"><span class="label">العنوان:</span>{{.ClientAddress}}</div>
+      <div class="info-cell"><span class="label">ملاحظات:</span>{{.Notes}}</div>
+    {{end}}
+  </div>
+
+  <table class="items">
+    <colgroup>
+      <col style="width:30%"><col style="width:16%"><col style="width:12%">
+      <col style="width:16%"><col style="width:12%"><col style="width:14%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>بيان</th>
+        <th>الكود</th>
+        <th>العبوة</th>
+        <th>سعر الوحدة</th>
+        <th>العدد</th>
+        <th>الإجمالي</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Items}}
+      <tr>
+        <td class="desc">{{.Title}}</td>
+        <td dir="ltr">{{.Code}}</td>
+        <td dir="ltr">{{.UnitsPerPackage}}</td>
+        <td dir="ltr" class="num">{{.UnitPrice}}</td>
+        <td dir="ltr">{{.PackageCount}}</td>
+        <td dir="ltr" class="num">{{.Total}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <div class="totals">
+    <div class="totals-row grand">
+      <span class="label">الإجمالي فقط وقدره:</span>
+      <span dir="ltr">{{.Total}} جنيه</span>
+    </div>
+    {{if .PaymentStatus}}
+      <div class="totals-row split">
+        <span><span class="label">المدفوع:</span><span dir="ltr">{{.Paid}} جنيه</span></span>
+        <span><span class="label">المتبقي:</span><span dir="ltr">{{.Remaining}} جنيه</span></span>
+      </div>
+      <div class="totals-row status">حالة السداد: {{.PaymentStatus}}</div>
+    {{end}}
+  </div>
+</body>
+</html>

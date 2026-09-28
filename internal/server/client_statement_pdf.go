@@ -21,6 +21,19 @@ import (
 //go:embed fonts/DejaVuSansCondensed-Bold.ttf
 var statementBoldFont []byte
 
+//go:embed fonts/DejaVuSansCondensed.ttf
+var invoiceFont []byte
+
+// invoiceDocumentTypeAr also labels ledger entries below (sales vs.
+// purchase movements), so it stays shared rather than living only in the
+// invoice renderer.
+func invoiceDocumentTypeAr(documentType string) string {
+	if documentType == "purchase" {
+		return "فاتورة شراء"
+	}
+	return "فاتورة بيع"
+}
+
 func (a *API) clientStatementPDF(c *gin.Context) {
 	clientID, ok := pathID(c, "id")
 	if !ok {

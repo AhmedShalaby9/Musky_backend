@@ -76,3 +76,7 @@ Set MYSQL_COMMERCE_TEST_DSN to a fresh dedicated MySQL database to exercise invo
 ## R2 uploads
 
 Set the R2 variables in the environment using .env.r2.example as a template. Never commit access keys. The API accepts multipart/form-data at /api/v1/tenants/:tenantID/files/upload (file) and /files/uploads (repeated files). Files are tenant-scoped, limited to JPEG/PNG/WebP/PDF, and up to 50 MiB each. See docs/commerce-api.md.
+
+## Invoice PDF rendering (Chromium)
+
+`POST /invoices/:id/pdf` renders invoices as HTML/CSS printed through headless Chromium (`internal/documents`), not the older `gofpdf` drawing code still used for client statements. Install a Chrome/Chromium package on the server and point `MUSKY_CHROME_PATH` at its binary (see `.env.example`); without it, the server still starts, but every invoice PDF request returns 503 until Chromium is available. No fonts need to be installed and no outbound network access is required — the font and any tenant logo are embedded as data URIs before Chromium sees the page. See `docs/pdf-rendering-migration.md` for the full design and the `MUSKY_CHROME_PATH`-gated tests in `internal/documents`.
