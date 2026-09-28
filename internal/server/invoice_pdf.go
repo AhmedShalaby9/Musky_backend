@@ -52,14 +52,17 @@ func (a *API) invoicePDF(c *gin.Context) {
 		return
 	}
 	logoKey := tenantRow.ObjectKey
-	var creator struct{ Name string }
-	if err = tx.Table("users").Select("name").Where("tenant_id = ? AND id = ?", tenantID(c), invoice.CreatedByUserID).Scan(&creator).Error; err != nil {
+	var trader struct {
+		ID   uint64
+		Name string
+	}
+	if err = tx.Table("users").Select("id, name").Where("tenant_id = ? AND role = ?", tenantID(c), model.Trader).Scan(&trader).Error; err != nil {
 		databaseError(c, err)
 		return
 	}
 	var contacts []documents.ContactLine
 	if err = tx.Table("user_contacts").Select("title, value").
-		Where("tenant_id = ? AND user_id = ? AND visible_on_invoice = TRUE", tenantID(c), invoice.CreatedByUserID).
+		Where("tenant_id = ? AND user_id = ? AND visible_on_invoice = TRUE", tenantID(c), trader.ID).
 		Order("sort_order, id").Scan(&contacts).Error; err != nil {
 		databaseError(c, err)
 		return
@@ -80,7 +83,7 @@ func (a *API) invoicePDF(c *gin.Context) {
 		}
 	}
 
-	html, err := documents.RenderInvoiceHTML(invoiceDocumentData(invoice, tenantRow.Name, creator.Name, contacts, logoData, logoExt))
+	html, err := documents.RenderInvoiceHTML(invoiceDocumentData(invoice, tenantRow.Name, trader.Name, contacts, logoData, logoExt))
 	if err != nil {
 		fail(c, 500, "could not build invoice document")
 		return

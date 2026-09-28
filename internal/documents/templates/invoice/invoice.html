@@ -65,12 +65,12 @@
   <div class="totals">
     <div class="totals-row grand">
       <span class="label">الإجمالي فقط وقدره:</span>
-      <span dir="ltr">{{.Total}} جنيه</span>
+      <span dir="ltr">{{.Total}}</span>
     </div>
     {{if .PaymentStatus}}
       <div class="totals-row split">
-        <span><span class="label">المدفوع:</span><span dir="ltr">{{.Paid}} جنيه</span></span>
-        <span><span class="label">المتبقي:</span><span dir="ltr">{{.Remaining}} جنيه</span></span>
+        <span><span class="label">المدفوع:</span><span dir="ltr">{{.Paid}}</span></span>
+        <span><span class="label">المتبقي:</span><span dir="ltr">{{.Remaining}}</span></span>
       </div>
       <div class="totals-row status">حالة السداد: {{.PaymentStatus}}</div>
     {{end}}
