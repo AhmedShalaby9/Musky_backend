@@ -234,9 +234,9 @@ func buildInvoicePDF(invoice model.Invoice, tenantName, creatorName string, cont
 	pdf.SetFont(font, "", 10)
 	for _, item := range invoice.Items {
 		pdf.CellFormat(colWidths[0], 9, moneyPDF(item.TotalMinor), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(colWidths[1], 9, easternDigits(fmt.Sprint(item.PackageCount)), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[1], 9, fmt.Sprint(item.PackageCount), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(colWidths[2], 9, moneyPDF(item.UnitPriceMinor), "1", 0, "C", false, 0, "")
-		pdf.CellFormat(colWidths[3], 9, easternDigits(fmt.Sprint(item.UnitsPerPackage)), "1", 0, "C", false, 0, "")
+		pdf.CellFormat(colWidths[3], 9, fmt.Sprint(item.UnitsPerPackage), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(colWidths[4], 9, arabic(truncatePDF(item.Code, 14)), "1", 0, "C", false, 0, "")
 		pdf.CellFormat(colWidths[5], 9, arabic(truncatePDF(item.Title, 22)), "1", 1, "R", false, 0, "")
 	}
@@ -265,18 +265,7 @@ func buildInvoicePDF(invoice model.Invoice, tenantName, creatorName string, cont
 	return pdf
 }
 
-func arabic(s string) string { return easternDigits(rtl.Shape(s)) }
-
-// easternDigits replaces ASCII digits with Eastern Arabic-Indic numerals
-// (٠-٩), since Musky's invoices are printed for an Arabic-reading audience.
-// Applied after shaping, it's a plain character swap on the final glyph
-// string and can't disturb the bidi reordering rtl.Shape already did.
-var easternDigitReplacer = strings.NewReplacer(
-	"0", "٠", "1", "١", "2", "٢", "3", "٣", "4", "٤",
-	"5", "٥", "6", "٦", "7", "٧", "8", "٨", "9", "٩",
-)
-
-func easternDigits(s string) string { return easternDigitReplacer.Replace(s) }
+func arabic(s string) string { return rtl.Shape(s) }
 
 func invoiceDocumentTypeAr(documentType string) string {
 	if documentType == "purchase" {
@@ -320,9 +309,7 @@ func formatInvoiceDate(value string) string {
 	return value
 }
 
-func moneyPDF(minor int64) string {
-	return easternDigits(fmt.Sprintf("%d.%02d", minor/100, minor%100))
-}
+func moneyPDF(minor int64) string { return fmt.Sprintf("%d.%02d", minor/100, minor%100) }
 
 func paymentStatusAr(s string) string {
 	switch s {
