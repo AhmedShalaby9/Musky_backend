@@ -128,6 +128,16 @@ Testing binary and reading them back):
   adds) — verify with `MUSKY_CHROME_PATH=/usr/bin/chromium go run
   ./cmd/server` (or the renderer tests) on the actual target image before
   relying on it in production.
+- If the musky-backend process runs as root (a root systemd unit, say),
+  Chrome will refuse to launch at all ("Running as root without
+  --no-sandbox is not supported") — see `MUSKY_CHROME_NO_SANDBOX` in
+  `.env.example`. Prefer running the service as a dedicated non-root user
+  instead of setting it; that keeps Chrome's sandbox intact.
+- On Ubuntu, prefer Google's own `google-chrome-stable` .deb over the
+  `chromium`/`chromium-browser` apt package where that package is a Snap
+  wrapper (common on Ubuntu 20.04+) — Snap-confined Chromium is unreliable
+  to launch from a systemd service. See the README's "Invoice PDF
+  rendering" section for install steps.
 
 **Not done (explicitly out of scope this round):** client statement
 migration (Phase 4 below), and Phase 6 cleanup (`gofpdf`/`nautilus/pdf/rtl`

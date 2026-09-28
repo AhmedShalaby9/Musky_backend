@@ -55,6 +55,15 @@ func NewRenderer(ctx context.Context) (*Renderer, error) {
 		}
 		opts = append(opts, chromedp.ExecPath(path))
 	}
+	// Chrome refuses to launch as root without --no-sandbox (its sandbox
+	// needs unprivileged-user namespace support it won't set up for root).
+	// Off by default — only set MUSKY_CHROME_NO_SANDBOX=1 if the server
+	// actually runs the process as root and a dedicated non-root systemd
+	// user isn't an option; prefer the latter, since this flag removes a
+	// real security boundary.
+	if os.Getenv("MUSKY_CHROME_NO_SANDBOX") == "1" {
+		opts = append(opts, chromedp.NoSandbox)
+	}
 	allocCtx, allocCancel := chromedp.NewExecAllocator(ctx, opts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
 

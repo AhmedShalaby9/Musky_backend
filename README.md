@@ -80,3 +80,15 @@ Set the R2 variables in the environment using .env.r2.example as a template. Nev
 ## Invoice PDF rendering (Chromium)
 
 `POST /invoices/:id/pdf` renders invoices as HTML/CSS printed through headless Chromium (`internal/documents`), not the older `gofpdf` drawing code still used for client statements. Install a Chrome/Chromium package on the server and point `MUSKY_CHROME_PATH` at its binary (see `.env.example`); without it, the server still starts, but every invoice PDF request returns 503 until Chromium is available. No fonts need to be installed and no outbound network access is required — the font and any tenant logo are embedded as data URIs before Chromium sees the page. See `docs/pdf-rendering-migration.md` for the full design and the `MUSKY_CHROME_PATH`-gated tests in `internal/documents`.
+
+On Ubuntu, install Google Chrome stable rather than the `chromium`/`chromium-browser` apt package, which is a Snap wrapper on Ubuntu 20.04+ and unreliable to launch from a systemd service:
+
+```bash
+wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+sudo apt update
+sudo apt install -y google-chrome-stable
+google-chrome-stable --version
+```
+
+Then set `MUSKY_CHROME_PATH=/usr/bin/google-chrome-stable` wherever the service's environment is configured (systemd unit `Environment=`/`EnvironmentFile=`, or the deployment's env config) and restart the service. If the service runs as root, also set `MUSKY_CHROME_NO_SANDBOX=1` — Chrome otherwise refuses to launch as root — though a dedicated non-root systemd user is preferable to that flag.
