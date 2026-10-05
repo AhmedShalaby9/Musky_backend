@@ -277,6 +277,12 @@ func TestMySQLCommerce(t *testing.T) {
 	if sum := call("GET", p+"/financial-summary", a, "", 200)["net_minor"]; sum != float64(212400) {
 		t.Fatal("void did not reverse debt", sum)
 	}
+	ledger = call("GET", fmt.Sprintf("%s/clients/%d/ledger", p, cid), a, "", 200)
+	for _, row := range ledger["entries"].([]any) {
+		if row.(map[string]any)["ref_id"] == float64(iid) {
+			t.Fatal("void invoice leaked into client ledger", ledger)
+		}
+	}
 	reactivated := call("POST", invoicePath+"/reactivate", a, `{"version":3}`, 200)
 	if reactivated["status"] != "posted" || reactivated["number"] != float64(1) {
 		t.Fatal("reactivation did not restore the original invoice", reactivated)
