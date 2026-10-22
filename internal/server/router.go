@@ -102,6 +102,7 @@ func New(db *sql.DB) *gin.Engine {
 	t.DELETE("/users/:id/contacts/:contactID", a.deleteUserContact)
 	t.GET("/clients", a.listClients)
 	t.POST("/clients", a.createClient)
+	t.GET("/clients/unpaid.xlsx", a.exportUnpaidClients)
 	t.GET("/clients/:id", a.getClient)
 	t.PATCH("/clients/:id", a.updateClient)
 	t.DELETE("/clients/:id", a.deleteClient)

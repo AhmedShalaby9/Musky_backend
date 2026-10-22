@@ -48,6 +48,9 @@ func (a *API) listProducts(c *gin.Context) {
 	if c.Query("active") == "true" {
 		query = query.Where("active = TRUE")
 	}
+	if c.Query("in_stock") == "true" {
+		query = query.Where("quantity > 0")
+	}
 	if q := strings.TrimSpace(c.Query("q")); q != "" {
 		query = query.Where("(title LIKE ? OR code LIKE ?)", "%"+q+"%", "%"+q+"%")
 	}
