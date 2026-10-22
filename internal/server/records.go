@@ -57,6 +57,7 @@ type stockMovementRecord struct {
 	CreatedByUserID uint64
 	Kind            string
 	QuantityDelta   int64
+	PiecesDelta     *int64
 }
 
 func (stockMovementRecord) TableName() string { return "stock_movements" }

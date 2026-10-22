@@ -101,6 +101,31 @@ func TestMySQLCommerce(t *testing.T) {
 	product := call("POST", p+"/products", a, `{"title":"Tea pack","code":"TEA","quantity":10,"pieces_per_unit":12}`, 201)
 	pid := int(product["id"].(float64))
 	productPath := fmt.Sprintf("%s/products/%d", p, pid)
+	// A pack of 500 pieces can coexist with loose stock. Piece sales, purchases,
+	// voids and returns must all update the same physical balance.
+	partial := call("POST", p+"/products", a, `{"title":"Loose screws","code":"SCREWS","quantity":1,"loose_pieces":250,"pieces_per_unit":500}`, 201)
+	partialID := int(partial["id"].(float64))
+	partialPath := fmt.Sprintf("%s/products/%d", p, partialID)
+	checkPartial := func(packs, loose float64) {
+		t.Helper()
+		got := call("GET", partialPath, a, "", 200)
+		if got["quantity"] != packs || got["loose_pieces"] != loose {
+			t.Fatalf("wrong piece stock: got %v packs and %v pieces, want %v packs and %v pieces", got["quantity"], got["loose_pieces"], packs, loose)
+		}
+	}
+	checkPartial(1, 250)
+	partialSale := call("POST", p+"/invoices", a, fmt.Sprintf(`{"client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"units_per_package":1,"package_count":250,"unit_price_minor":100}]}`, cid, partialID), 201)
+	partialSalePath := fmt.Sprintf("%s/invoices/%.0f", p, partialSale["id"])
+	call("POST", partialSalePath+"/post", a, `{"version":1}`, 200)
+	checkPartial(1, 0)
+	partialPurchase := call("POST", p+"/invoices", a, fmt.Sprintf(`{"document_type":"purchase","client_id":%d,"issue_date":"2026-09-12","items":[{"product_id":%d,"units_per_package":1,"package_count":125,"unit_price_minor":100}]}`, cid, partialID), 201)
+	partialPurchasePath := fmt.Sprintf("%s/invoices/%.0f", p, partialPurchase["id"])
+	call("POST", partialPurchasePath+"/post", a, `{"version":1}`, 200)
+	checkPartial(1, 125)
+	call("POST", partialPurchasePath+"/void", a, `{"version":2,"reason":"test"}`, 200)
+	checkPartial(1, 0)
+	call("POST", partialSalePath+"/returns", a, fmt.Sprintf(`{"items":[{"product_id":%d,"package_count":250}]}`, partialID), 201)
+	checkPartial(1, 250)
 	call("POST", p+"/products", a, `{"title":"Duplicate","code":"TEA","quantity":1,"pieces_per_unit":1}`, 409)
 	foreignProduct := call("POST", other+"/products", b, `{"title":"Other tea","code":"TEA","quantity":1,"pieces_per_unit":1}`, 201)
 	fpid := int(foreignProduct["id"].(float64))

@@ -24,19 +24,19 @@ func invoiceHasProduct(invoice model.Invoice, productID uint64) bool {
 // replaces the invoice lines and total. A non-empty message means the edit is
 // rejected with that HTTP status and nothing has been written.
 func applyPostedInvoiceEdit(tx *gorm.DB, tenant, userID uint64, existing model.Invoice, items []model.InvoiceItem, newTotal int64) (int, string, error) {
-	returned, err := returnedQuantities(tx, tenant, existing.ID)
+	returned, err := returnedPieces(tx, tenant, existing.ID)
 	if err != nil {
 		return 0, "", err
 	}
 	oldQty := map[uint64]int64{}
 	titles := map[uint64]string{}
 	for _, item := range existing.Items {
-		oldQty[item.ProductID] += item.Quantity
+		oldQty[item.ProductID] += invoicePieces(item)
 		titles[item.ProductID] = item.Title
 	}
 	newQty := map[uint64]int64{}
 	for _, item := range items {
-		newQty[item.ProductID] += item.Quantity
+		newQty[item.ProductID] += invoicePieces(item)
 		titles[item.ProductID] = item.Title
 	}
 	for productID, qty := range returned {
@@ -74,17 +74,21 @@ func applyPostedInvoiceEdit(tx *gorm.DB, tenant, userID uint64, existing model.I
 			}
 			return 0, "", err
 		}
-		if ch.delta < 0 && p.Quantity < -ch.delta {
-			return 409, fmt.Sprintf("المخزون غير كافٍ للصنف %s (المتاح %d)", titles[ch.productID], p.Quantity), nil
+		if ch.delta < 0 && stockPieces(p) < -ch.delta {
+			return 409, fmt.Sprintf("المخزون غير كافٍ للصنف %s (المتاح %d قطعة)", titles[ch.productID], stockPieces(p)), nil
 		}
-		if ch.delta > 0 && p.Quantity > maxQuantity-ch.delta {
+		if ch.delta > 0 && stockPieces(p) > maxQuantity*p.PiecesPerUnit+p.PiecesPerUnit-1-ch.delta {
 			return 409, "stock limit would be exceeded", nil
 		}
-		if err := tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenant, p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", ch.delta), "version": gorm.Expr("version + 1")}).Error; err != nil {
+		changed, err := changeStock(tx, p, ch.delta)
+		if err != nil {
 			return 0, "", err
 		}
+		if !changed {
+			return 409, "stock could not be changed", nil
+		}
 		invoiceID := existing.ID
-		if err := tx.Create(&stockMovementRecord{TenantID: tenant, ProductID: p.ID, InvoiceID: &invoiceID, CreatedByUserID: userID, Kind: "edit", QuantityDelta: ch.delta}).Error; err != nil {
+		if err := tx.Create(&stockMovementRecord{TenantID: tenant, ProductID: p.ID, InvoiceID: &invoiceID, CreatedByUserID: userID, Kind: "edit", QuantityDelta: (stockPieces(p)+ch.delta)/p.PiecesPerUnit - p.Quantity, PiecesDelta: &ch.delta}).Error; err != nil {
 			return 0, "", err
 		}
 	}

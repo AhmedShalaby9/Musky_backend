@@ -502,10 +502,11 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 				databaseError(c, err)
 				return
 			}
-			delta := item.Quantity
+			pieces := invoicePieces(item)
+			delta := pieces
 			kind := "void"
 			if target == "posted" || reactivate {
-				if !p.Active || (v.DocumentType == "sale" && p.Quantity < item.Quantity) {
+				if !p.Active || (v.DocumentType == "sale" && stockPieces(p) < pieces) {
 					fail(c, 409, fmt.Sprintf("insufficient stock or archived product: %s", item.Title))
 					return
 				}
@@ -514,11 +515,11 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 					return
 				}
 				if v.DocumentType == "sale" {
-					delta = -item.Quantity
+					delta = -pieces
 				}
 				kind = "sale"
 				if v.DocumentType == "purchase" {
-					delta = item.Quantity
+					delta = pieces
 					kind = "purchase"
 				}
 				if reactivate {
@@ -528,20 +529,25 @@ func (a *API) transitionInvoice(c *gin.Context, target string) {
 						kind = "reactivate"
 					}
 				}
-			} else if v.DocumentType == "sale" && p.Quantity > maxQuantity-item.Quantity {
+			} else if v.DocumentType == "sale" && stockPieces(p) > maxQuantity*p.PiecesPerUnit+p.PiecesPerUnit-1-pieces {
 				fail(c, 409, "stock limit would be exceeded by reversal")
 				return
-			} else if v.DocumentType == "purchase" && p.Quantity < item.Quantity {
+			} else if v.DocumentType == "purchase" && stockPieces(p) < pieces {
 				fail(c, 409, "insufficient stock to reverse this purchase")
 				return
 			} else if v.DocumentType == "purchase" {
-				delta = -item.Quantity
+				delta = -pieces
 			}
-			if err = tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenantID(c), p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", delta), "version": gorm.Expr("version + 1")}).Error; err != nil {
-				databaseError(c, err)
+			changed, changeErr := changeStock(tx, p, delta)
+			if changeErr != nil {
+				databaseError(c, changeErr)
 				return
 			}
-			if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, CreatedByUserID: actor(c).ID, Kind: kind, QuantityDelta: delta}).Error; err != nil {
+			if !changed {
+				fail(c, 409, "stock limit would be exceeded")
+				return
+			}
+			if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, CreatedByUserID: actor(c).ID, Kind: kind, QuantityDelta: (stockPieces(p)+delta)/p.PiecesPerUnit - p.Quantity, PiecesDelta: &delta}).Error; err != nil {
 				databaseError(c, err)
 				return
 			}
@@ -686,6 +692,21 @@ func returnedQuantities(tx *gorm.DB, tenant, invoiceID uint64) (map[uint64]int64
 	return out, nil
 }
 
+func returnedPieces(tx *gorm.DB, tenant, invoiceID uint64) (map[uint64]int64, error) {
+	rows := []struct {
+		ProductID uint64
+		Quantity  int64
+	}{}
+	if err := tx.Model(&invoiceReturnItemRecord{}).Select("product_id, COALESCE(SUM(units_per_package * package_count),0) AS quantity").Where("tenant_id = ? AND invoice_id = ?", tenant, invoiceID).Group("product_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := map[uint64]int64{}
+	for _, row := range rows {
+		out[row.ProductID] = row.Quantity
+	}
+	return out, nil
+}
+
 func (a *API) createInvoiceReturn(c *gin.Context) {
 	id, ok := pathID(c, "id")
 	if !ok {
@@ -782,15 +803,21 @@ func (a *API) createInvoiceReturn(c *gin.Context) {
 			databaseError(c, err)
 			return
 		}
-		if p.Quantity > maxQuantity-returnItems[i].InvoiceReturnItem.Quantity {
+		pieces := returnItems[i].UnitsPerPackage * returnItems[i].PackageCount
+		if stockPieces(p) > maxQuantity*p.PiecesPerUnit+p.PiecesPerUnit-1-pieces {
 			fail(c, 409, "stock limit would be exceeded by return")
 			return
 		}
-		if err = tx.Model(&model.Product{}).Where("tenant_id = ? AND id = ?", tenantID(c), p.ID).Updates(map[string]any{"quantity": gorm.Expr("quantity + ?", returnItems[i].InvoiceReturnItem.Quantity), "version": gorm.Expr("version + 1")}).Error; err != nil {
-			databaseError(c, err)
+		changed, changeErr := changeStock(tx, p, pieces)
+		if changeErr != nil {
+			databaseError(c, changeErr)
 			return
 		}
-		if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, ReturnID: &returnID, CreatedByUserID: actor(c).ID, Kind: "return", QuantityDelta: returnItems[i].InvoiceReturnItem.Quantity}).Error; err != nil {
+		if !changed {
+			fail(c, 409, "stock limit would be exceeded by return")
+			return
+		}
+		if err = tx.Create(&stockMovementRecord{TenantID: tenantID(c), ProductID: p.ID, InvoiceID: &id, ReturnID: &returnID, CreatedByUserID: actor(c).ID, Kind: "return", QuantityDelta: (stockPieces(p)+pieces)/p.PiecesPerUnit - p.Quantity, PiecesDelta: &pieces}).Error; err != nil {
 			databaseError(c, err)
 			return
 		}

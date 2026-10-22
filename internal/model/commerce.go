@@ -29,13 +29,14 @@ type LedgerEntry struct {
 	At             time.Time `json:"at"`
 }
 
-// Product quantities are measured in whole boxes/packs, not pieces.
+// Stock is stored as complete packs plus loose pieces.
 type Product struct {
 	ID            uint64    `json:"id"`
 	TenantID      uint64    `json:"tenant_id"`
 	Title         string    `json:"title"`
 	Code          string    `json:"code"`
 	Quantity      int64     `json:"quantity"`
+	LoosePieces   int64     `json:"loose_pieces"`
 	PiecesPerUnit int64     `json:"pieces_per_unit"`
 	Active        bool      `json:"active"`
 	Version       int64     `json:"version"`
