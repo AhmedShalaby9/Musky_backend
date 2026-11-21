@@ -131,6 +131,7 @@ func New(db *sql.DB) *gin.Engine {
 	t.POST("/invoices/:id/payments", a.createPayment)
 	t.POST("/invoices/:id/returns", a.createInvoiceReturn)
 	t.POST("/invoices/:id/pdf", a.invoicePDF)
+	t.GET("/reports", a.reports)
 	t.GET("/expenses", a.listExpenses)
 	t.POST("/expenses", a.createExpense)
 	t.DELETE("/expenses/:id", a.deleteExpense)
