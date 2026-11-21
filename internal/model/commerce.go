@@ -38,6 +38,7 @@ type Product struct {
 	Quantity      int64     `json:"quantity"`
 	LoosePieces   int64     `json:"loose_pieces"`
 	PiecesPerUnit int64     `json:"pieces_per_unit"`
+	CostMinor     int64     `json:"cost_minor"`
 	Active        bool      `json:"active"`
 	Version       int64     `json:"version"`
 	CreatedAt     time.Time `json:"created_at"`

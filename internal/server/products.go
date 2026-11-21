@@ -10,7 +10,7 @@ import (
 
 const maxQuantity int64 = 1000000000
 const maxTotal int64 = 100000000000000
-const productColumns = "id,tenant_id,title,code,quantity,loose_pieces,pieces_per_unit,active,version,created_at"
+const productColumns = "id,tenant_id,title,code,quantity,loose_pieces,pieces_per_unit,cost_minor,active,version,created_at"
 
 // All commerce mutations acquire the tenant row first. This serializes stock
 // corrections, invoice posting and numbering within a tenant, not across tenants.
@@ -87,6 +87,7 @@ type productInput struct {
 	Quantity      *int64  `json:"quantity"`
 	LoosePieces   *int64  `json:"loose_pieces"`
 	PiecesPerUnit *int64  `json:"pieces_per_unit"`
+	CostMinor     *int64  `json:"cost_minor"`
 	Active        *bool   `json:"active"`
 	Version       int64   `json:"version"`
 }
@@ -195,7 +196,7 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 		fail(c, 400, "current product version is required")
 		return
 	}
-	if !create && in.Title == nil && in.Code == nil && in.Quantity == nil && in.LoosePieces == nil && in.PiecesPerUnit == nil && in.Active == nil {
+	if !create && in.Title == nil && in.Code == nil && in.Quantity == nil && in.LoosePieces == nil && in.PiecesPerUnit == nil && in.CostMinor == nil && in.Active == nil {
 		fail(c, 400, "no changes provided")
 		return
 	}
@@ -244,10 +245,13 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 	if in.PiecesPerUnit != nil {
 		p.PiecesPerUnit = *in.PiecesPerUnit
 	}
+	if in.CostMinor != nil {
+		p.CostMinor = *in.CostMinor
+	}
 	if in.Active != nil {
 		p.Active = *in.Active
 	}
-	if !validText(p.Title, 1, 150) || !validText(p.Code, 1, 80) || p.Quantity < 0 || p.Quantity > maxQuantity || p.PiecesPerUnit < 1 || p.PiecesPerUnit > 1000000 || p.LoosePieces < 0 || p.LoosePieces >= p.PiecesPerUnit {
+	if !validText(p.Title, 1, 150) || !validText(p.Code, 1, 80) || p.Quantity < 0 || p.Quantity > maxQuantity || p.PiecesPerUnit < 1 || p.PiecesPerUnit > 1000000 || p.LoosePieces < 0 || p.LoosePieces >= p.PiecesPerUnit || p.CostMinor < 0 || p.CostMinor > 1000000000000 {
 		fail(c, 400, "invalid product fields or numeric limits")
 		return
 	}
@@ -259,7 +263,7 @@ func (a *API) saveProduct(c *gin.Context, create bool) {
 		}
 		id = p.ID
 	} else {
-		result := tx.Table("products").Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"title": p.Title, "code": p.Code, "quantity": p.Quantity, "loose_pieces": p.LoosePieces, "pieces_per_unit": p.PiecesPerUnit, "active": p.Active, "version": gorm.Expr("version + 1")})
+		result := tx.Table("products").Where("tenant_id = ? AND id = ?", tenantID(c), id).Updates(map[string]any{"title": p.Title, "code": p.Code, "quantity": p.Quantity, "loose_pieces": p.LoosePieces, "pieces_per_unit": p.PiecesPerUnit, "cost_minor": p.CostMinor, "active": p.Active, "version": gorm.Expr("version + 1")})
 		if result.Error != nil {
 			databaseError(c, result.Error)
 			return
