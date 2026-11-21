@@ -112,3 +112,13 @@ type InvoiceReturnItem struct {
 	UnitPriceMinor  int64  `json:"unit_price_minor"`
 	TotalMinor      int64  `json:"total_minor"`
 }
+
+type ChinaEntry struct {
+	ID              uint64    `json:"id"`
+	TenantID        uint64    `json:"tenant_id"`
+	CreatedByUserID uint64    `json:"created_by_user_id"`
+	Kind            string    `json:"kind"`
+	AmountMinor     int64     `json:"amount_minor"`
+	Notes           string    `json:"notes"`
+	CreatedAt       time.Time `json:"created_at"`
+}
