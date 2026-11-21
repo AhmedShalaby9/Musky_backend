@@ -205,15 +205,20 @@ func (a *API) reports(c *gin.Context) {
 		}
 	}
 
+	netRevenue := totalRevenue - totalReturned
+	grossProfit := netRevenue - totalCOGS
+	netProfit := grossProfit - totalExpenses
+
 	c.JSON(200, gin.H{
 		"totals": gin.H{
-			"revenue_minor":   totalRevenue,
-			"cogs_minor":      totalCOGS,
-			"profit_minor":    totalProfit,
-			"returned_minor":  totalReturned,
-			"expenses_minor":  totalExpenses,
-			"purchases_minor": totalPurchases,
-			"net_profit_minor": totalProfit - totalExpenses,
+			"revenue_minor":     totalRevenue,
+			"returned_minor":    totalReturned,
+			"net_revenue_minor": netRevenue,
+			"cogs_minor":        totalCOGS,
+			"gross_profit_minor": grossProfit,
+			"expenses_minor":    totalExpenses,
+			"purchases_minor":   totalPurchases,
+			"net_profit_minor":  netProfit,
 		},
 		"top_selling": products,
 		"top_profit":  topProfit,
